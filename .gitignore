@@ -1,0 +1,14 @@
+# ===== 個人情報保護 =====
+# 実データ・出力は絶対にコミットしない（ローカルのみで扱う）
+data/
+output/
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+!config/*.example.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
