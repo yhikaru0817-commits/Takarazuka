@@ -92,6 +92,28 @@ def map_header(h) -> str | None:
 _CONTAINS_ALIASES = [a for a in ALIAS_TO_FIELD if len(a) >= 3]
 
 
+def add_aliases(mapping: dict) -> None:
+    """独自の列名を追加する（config/column_aliases.csv から読み込む）。"""
+    for header, field in mapping.items():
+        ALIAS_TO_FIELD[header_key(header)] = field
+        if len(header_key(header)) >= 3 and header_key(header) not in _CONTAINS_ALIASES:
+            _CONTAINS_ALIASES.append(header_key(header))
+
+
+def load_aliases(path) -> int:
+    """config/column_aliases.csv : header,field  （field は name_kanji / phone / ticket など）"""
+    import pandas as pd
+    from pathlib import Path
+    path = Path(path)
+    if not path.exists():
+        return 0
+    df = pd.read_csv(path, dtype=str, encoding="utf-8-sig").fillna("")
+    valid = set(PERSON_FIELDS) | set(AMOUNT_FIELDS) | set(TICKET_FIELDS)
+    mapping = {h: f.strip() for h, f in zip(df["header"], df["field"]) if h and f.strip() in valid}
+    add_aliases(mapping)
+    return len(mapping)
+
+
 # ---------- 値の正規化 ----------
 
 PREFECTURES = [

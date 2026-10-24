@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .classify import classify_sheet
 from .columns import is_blank, map_header
+from .columns import load_aliases
 from .identity import absorb_review_decisions, save_master
 from .pipeline import find_header, read_sheets, run, write_outputs
 
@@ -45,6 +46,7 @@ def main(argv=None):
     if not paths:
         raise SystemExit(f"{src} に Excel/CSV ファイルがありません")
 
+    load_aliases("config/column_aliases.csv")
     if args.inspect:
         inspect(paths)
         return

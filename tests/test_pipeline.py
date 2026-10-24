@@ -294,3 +294,59 @@ class MasterTest(unittest.TestCase):
         persons, _ = self.run_cli()
         self.assertEqual(len(persons), 1)
         self.assertEqual(persons.iloc[0]["line_id"], "U0123abcd")
+
+
+class StandardizeTest(unittest.TestCase):
+    """バラバラな既存シート → 指定形式 → 統合 までの流れ。"""
+
+    def test_messy_sheets_to_standard_format(self):
+        import contextlib, io
+        from takarazuka_data.standardize import main as standardize
+        from takarazuka_data.standardize import load_map
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig, raw, smap = d / "original", d / "raw", d / "sheet_map.csv"
+            orig.mkdir()
+            with pd.ExcelWriter(orig / "2026年 管理表.xlsx") as w:
+                pd.DataFrame([
+                    ["渤海 チケット申込者一覧", "", "", "", "", ""],
+                    ["氏名", "フリガナ", "電話番号", "住所", "チケット代", "お花代"],
+                    ["架空　花子", "かくう はなこ", 9000000001, "大阪府架空市1丁目2番3号", "¥24,000", "5,000円"],
+                    ["合計", "", "", "", 24000, 5000],
+                ]).to_excel(w, sheet_name="渤海 宝塚大劇場 2026.1.21", header=False, index=False)
+                pd.DataFrame([["お名前", "カナ", "TEL", "参加費"],
+                              ["架空花子", "カクウハナコ", "090-0000-0001", 15000]]
+                             ).to_excel(w, sheet_name="渤海お茶会参加者", header=False, index=False)
+                pd.DataFrame([["名前", "電話", "合計金額"], ["架空 花子", "09000000001", 3000]]
+                             ).to_excel(w, sheet_name="2025年12月クリスマス会", header=False, index=False)
+                pd.DataFrame([["メモ"]]).to_excel(w, sheet_name="メモ", header=False, index=False)
+            args = [str(orig), "-o", str(raw), "--map", str(smap), "--aliases", str(d / "none.csv")]
+            with contextlib.redirect_stdout(io.StringIO()):
+                todo = standardize(args)
+            m = load_map(smap).set_index("source_sheet")
+            self.assertEqual(m.at["渤海 宝塚大劇場 2026.1.21", "target_sheet"], "2026_0121_大公演_渤海")
+            self.assertEqual(m.at["渤海お茶会参加者", "target_sheet"], "渤海_お茶会")
+            self.assertEqual(m.at["2025年12月クリスマス会", "target_sheet"], "2025_1201_クリスマス会")
+            self.assertIn("日が不明", m.at["2025年12月クリスマス会", "note"])
+            self.assertEqual(todo, 1, "分類できない「メモ」だけ記入待ち")
+
+            out = pd.read_csv(raw / "2026_0121_大公演_渤海.csv", dtype=str).fillna("")
+            self.assertEqual(list(out.columns), STD + ["Ticket", "Support"], "指定の列名・列順")
+            self.assertEqual(len(out), 1, "タイトル行・合計行は除く")
+            self.assertEqual(out.iloc[0]["phone-number"], "09000000001")
+            self.assertEqual(out.iloc[0]["prefecture"], "大阪府")
+            self.assertEqual(out.iloc[0]["name katakana"], "カクウ ハナコ")
+            self.assertEqual((out.iloc[0]["Ticket"], out.iloc[0]["Support"]), ("24000", "5000"))
+
+            # 人が sheet_map を直して再実行すると、修正が優先される
+            fixed = load_map(smap)
+            fixed.loc[fixed["source_sheet"] == "メモ", "category"] = "skip"
+            fixed.loc[fixed["source_sheet"] == "2025年12月クリスマス会", "date"] = "20251220"
+            fixed.to_csv(smap, index=False, encoding="cp932")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(standardize(args), 0)
+            self.assertTrue((raw / "2025_1220_クリスマス会.csv").exists())
+
+            r = run(sorted(p for p in raw.glob("*.csv") if "1201" not in p.name))
+        self.assertEqual(len(r.persons), 1, "整形後のシート同士で同一人物にまとまる")
+        self.assertEqual(int(r.summary["total"].iloc[0]), 24000 + 5000 + 15000 + 3000)
