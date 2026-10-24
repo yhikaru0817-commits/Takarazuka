@@ -6,6 +6,7 @@
     親睦会 (small 用)  : 公演名_親睦会
     グッズ             : 公演名_グッズ
     annual             : year_date_企画名
+    今回のチケット申請 : year_date_種別_公演名_申請   例) 2026_1105_大公演_星の詩_申請
 """
 from __future__ import annotations
 
@@ -20,11 +21,14 @@ TEA_PARTY = "tea_party"  # お茶会 (large に紐づく)
 SOCIAL = "social"  # 親睦会 (small に紐づく)
 ANNUAL = "annual"
 GOODS = "goods"
+APPLICATION = "application"  # 今回のチケット申請（実績ではなく見込み）
 UNKNOWN = "unknown"
 
 # 公演種別キーワード（比較は NFKC + 小文字化後）
 LARGE_KEYWORDS = {"large", "大公演", "大劇場", "大劇場公演"}
 SMALL_KEYWORDS = {"small", "小公演", "小劇場", "別箱", "別箱公演"}
+
+APPLICATION_SUFFIXES = ("申請", "申込", "チケット申請")
 
 # サフィックス → (種別, 紐づけ先の公演種別)
 SUFFIXES = {
@@ -90,6 +94,16 @@ def _split_performance(rest: str):
 def classify_sheet(sheet_name: str) -> SheetInfo:
     text = normalize_text(sheet_name)
     text = re.sub(r"\s*_\s*", "_", text)
+
+    for suffix in APPLICATION_SUFFIXES:
+        if text.endswith("_" + suffix):
+            dated = _parse_dated(text[: -(len(suffix) + 1)])
+            perf = _split_performance(dated[1]) if dated else None
+            if not perf:
+                return SheetInfo(sheet_name, UNKNOWN, text,
+                                 error="申請シートは 年_月日_大公演/小公演_公演名_申請 の形式にしてください")
+            # link_category に公演種別 (large/small) を持たせる
+            return SheetInfo(sheet_name, APPLICATION, perf[1], dated[0], perf[0], error=dated[2])
 
     for suffix, (category, link_category) in SUFFIXES.items():
         if text.endswith("_" + suffix):

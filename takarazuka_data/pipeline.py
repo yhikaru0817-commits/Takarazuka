@@ -12,16 +12,18 @@ from pathlib import Path
 import pandas as pd
 
 from .classify import (
-    ANNUAL, GOODS, LARGE, SMALL, SOCIAL, TEA_PARTY, UNKNOWN,
+    ANNUAL, APPLICATION, GOODS, LARGE, SMALL, SOCIAL, TEA_PARTY, UNKNOWN,
     SheetInfo, classify_sheet, name_key,
 )
 from .columns import (
-    AMOUNT_FIELDS, EXPECTED_AMOUNTS, PERSON_FIELDS,
-    clean_amount, clean_email, clean_kana, clean_phone, clean_postal,
-    clean_prefecture, clean_text, is_blank, map_header, split_prefecture,
+    AMOUNT_FIELDS, EXPECTED_AMOUNTS, MULTI_FIELDS, PERSON_FIELDS, TICKET_FIELDS,
+    clean_amount, clean_email, clean_kana, clean_phone, clean_postal, clean_prefecture,
+    clean_quantity, clean_seat, clean_text, clean_time, is_blank, map_header, parse_show,
+    split_alternatives, split_prefecture,
 )
 
-CATEGORY_PREFIX = {LARGE: "L", SMALL: "S", TEA_PARTY: "T", SOCIAL: "K", ANNUAL: "A", GOODS: "G"}
+CATEGORY_PREFIX = {LARGE: "L", SMALL: "S", TEA_PARTY: "T", SOCIAL: "K", ANNUAL: "A", GOODS: "G", APPLICATION: "R"}
+ACTUAL_CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS]  # 実績（申請の見込額は含めない）
 HEADER_SCAN_ROWS = 15
 
 
@@ -31,6 +33,9 @@ class Result:
     persons: pd.DataFrame
     spending: pd.DataFrame
     summary: pd.DataFrame
+    ticket_history: pd.DataFrame
+    application_requests: pd.DataFrame
+    application_preferences: pd.DataFrame
     review: pd.DataFrame
     issues: list = field(default_factory=list)
 
@@ -63,11 +68,11 @@ def find_header(df: pd.DataFrame):
         mapping = {}
         for col, h in df.iloc[i].items():
             f = map_header(h)
-            if f and f not in mapping.values():
+            if f and (f in MULTI_FIELDS or f not in mapping.values()):
                 mapping[col] = f
         if len(mapping) > len(best_map):
             best_row, best_map = i, mapping
-    if len(best_map) < 2:
+    if len(set(best_map.values())) < 2:
         return None, {}
     return best_row, best_map
 
@@ -163,6 +168,24 @@ def load_link_overrides(path: Path | None) -> dict:
     return {name_key(a): name_key(b) for a, b in zip(df["fan_event_sheet"], df["performance_sheet"]) if a and b}
 
 
+def load_seat_prices(path: Path | None) -> dict:
+    """config/seat_prices.csv : category,seat_type,price[,performance_sheet]
+
+    performance_sheet を書いた行はその公演だけの価格として優先する。
+    戻り値: {(category, seat_type, performance_sheet_key or ""): price}
+    """
+    if not path or not path.exists():
+        return {}
+    df = pd.read_csv(path, dtype=str, encoding="utf-8-sig").fillna("")
+    prices = {}
+    for _, r in df.iterrows():
+        amount, err = clean_amount(r["price"])
+        if not err and r["category"] and r["seat_type"]:
+            perf = name_key(r.get("performance_sheet", ""))
+            prices[(r["category"].strip().lower(), r["seat_type"].strip().upper(), perf)] = amount
+    return prices
+
+
 def link_events(events: pd.DataFrame, overrides: dict, issue_for) -> pd.DataFrame:
     events = events.copy()
     events["linked_event_id"] = ""
@@ -202,7 +225,34 @@ def link_events(events: pd.DataFrame, overrides: dict, issue_for) -> pd.DataFram
 
 # ---------- メイン ----------
 
-def run(paths: list[Path], links_path: Path | None = None) -> Result:
+def _ticket_fields(raw: dict, info: SheetInfo, issue) -> dict:
+    """公演（実績）・申請シートの席種 / 枚数 / 公演日時 / 振替を正規化する。"""
+    perf_category = info.link_category if info.category == APPLICATION else info.category
+    rec = {"seat_type": "", "quantity": pd.NA, "show_date": None, "show_time": "", "alternatives": []}
+    if info.category == APPLICATION or not is_blank(raw.get("seat_type")):
+        rec["seat_type"], err = clean_seat(raw.get("seat_type"), perf_category)
+        if err:
+            issue("warning", err)
+    if info.category == APPLICATION or not is_blank(raw.get("quantity")):
+        rec["quantity"], err = clean_quantity(raw.get("quantity"))
+        if err:
+            issue("warning" if rec["quantity"] else "error", err)
+    rec["show_date"], t, date_err = parse_show(raw.get("show_date"), info.event_date)
+    rec["show_time"] = clean_time(raw.get("show_time")) or t
+    if date_err:
+        issue("error", date_err)
+    for alt in split_alternatives(raw.get("alt_dates", [])):
+        d, t, err = parse_show(alt, info.event_date)
+        if err:
+            issue("error", f"振替日程: {err}")
+        else:
+            rec["alternatives"].append((d, t))
+    if info.category == APPLICATION and rec["show_date"] is None and not date_err:
+        issue("error", "第1希望の公演日がありません")
+    return rec
+
+
+def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | None = None) -> Result:
     issues = []
 
     def issue_for(sheet, row=None):
@@ -243,13 +293,22 @@ def run(paths: list[Path], links_path: Path | None = None) -> Result:
             sheet_issue("info", f"未対応の列を無視しました: {', '.join(unmapped)}")
 
         for i in range(header_row + 1, len(df)):
-            raw = {f: df.iat[i, df.columns.get_loc(c)] for c, f in mapping.items()}
+            raw = {}
+            for c, f in mapping.items():
+                v = df.iat[i, df.columns.get_loc(c)]
+                if f in MULTI_FIELDS:
+                    raw.setdefault(f, []).append(v)
+                else:
+                    raw[f] = v
             if all(is_blank(raw.get(f)) for f in PERSON_FIELDS) or _is_total_row(raw):
                 continue
-            rec = normalize_row(raw, issue_for(sheet_name, i + 1))  # Excel の行番号
+            row_issue = issue_for(sheet_name, i + 1)  # Excel の行番号
+            rec = normalize_row(raw, row_issue)
             if not rec["name_kanji"] and not rec["name_kana"]:
-                issue_for(sheet_name, i + 1)("warning", "氏名がありません（名寄せ不可のためスキップ）")
+                row_issue("warning", "氏名がありません（名寄せ不可のためスキップ）")
                 continue
+            if info.category in (LARGE, SMALL, APPLICATION):
+                rec.update(_ticket_fields(raw, info, row_issue))
             rec.update({"event_id": event_id, "source_row": i + 1})
             data_rows.append(rec)
 
@@ -266,21 +325,26 @@ def run(paths: list[Path], links_path: Path | None = None) -> Result:
     date_map = dict(zip(events["event_id"], events["event_date"]))
     events["effective_date"] = [
         d if not pd.isna(d) else date_map.get(l) for d, l in zip(events["event_date"], events["linked_event_id"])]
-    events = events.drop(columns=["link_category"]).sort_values(["effective_date", "category"], na_position="last")
+    events = events.sort_values(["effective_date", "category"], na_position="last")
 
-    rows = pd.DataFrame(data_rows, columns=PERSON_FIELDS + AMOUNT_FIELDS + ["event_id", "source_row"])
+    extra = ["seat_type", "quantity", "show_date", "show_time", "alternatives"]
+    rows = pd.DataFrame(data_rows, columns=PERSON_FIELDS + AMOUNT_FIELDS + extra + ["event_id", "source_row"])
     rows["person_id"] = assign_person_ids(rows) if len(rows) else pd.Series(dtype=str)
     rows = rows.merge(events[["event_id", "category", "effective_date"]], on="event_id", how="left")
+    applications = rows[rows["category"] == APPLICATION]
+    actual = rows[rows["category"] != APPLICATION]
 
     # persons: 各項目について最新イベントの値を採用
     latest_first = rows.sort_values("effective_date", ascending=False, na_position="last")
     persons = (latest_first.replace("", pd.NA).groupby("person_id")[PERSON_FIELDS].first()
                .fillna("").reset_index())
-    counts = rows.groupby("person_id")["event_id"].nunique().rename("event_count")
-    persons = persons.merge(counts, on="person_id")
+    counts = actual.groupby("person_id")["event_id"].nunique().rename("event_count")
+    persons = persons.merge(counts, on="person_id", how="left")
+    persons["event_count"] = persons["event_count"].fillna(0).astype(int)
+    persons["is_new"] = persons["event_count"] == 0  # 実績なし（今回の申請が初めて）
 
-    # spending: 縦持ち（1行 = 人 × イベント × 費目）
-    spending = rows.melt(
+    # spending: 縦持ち（1行 = 人 × イベント × 費目）。実績のみ
+    spending = actual.melt(
         id_vars=["person_id", "event_id", "category", "source_row"], value_vars=AMOUNT_FIELDS,
         var_name="item", value_name="amount")
     allowed = spending.apply(lambda r: r["item"] in EXPECTED_AMOUNTS[r["category"]], axis=1)
@@ -290,12 +354,51 @@ def run(paths: list[Path], links_path: Path | None = None) -> Result:
             "warning", f"{r['category']} に想定外の金額列 {r['item']} があります（集計には含めます）")
     spending = spending[allowed | (spending["amount"] != 0)].drop(columns="source_row")
 
-    # summary: 人 × 種別の合計金額
-    summary = spending.pivot_table(index="person_id", columns="category", values="amount",
-                                   aggfunc="sum", fill_value=0)
-    summary = summary.reindex(columns=[LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS], fill_value=0)
-    summary["total"] = summary.sum(axis=1)
-    summary = summary.reset_index()
+    # summary: 人 × 種別の合計金額（公演はチケット代とサポート代を分ける）
+    key = spending["category"] + "_" + spending["item"]
+    key = key.where(spending["category"].isin([LARGE, SMALL]), spending["category"])
+    summary = spending.assign(key=key).pivot_table(index="person_id", columns="key", values="amount",
+                                                   aggfunc="sum", fill_value=0)
+    cols = ["large_ticket", "large_support", "small_ticket", "small_support", TEA_PARTY, SOCIAL, ANNUAL, GOODS]
+    summary = summary.reindex(index=persons["person_id"], columns=cols, fill_value=0).fillna(0).astype(int)
+    summary["support_total"] = summary["large_support"] + summary["small_support"]
+    summary["total"] = summary[cols].sum(axis=1)
+    summary = summary.reset_index().rename_axis(columns=None)
+
+    # ticket_history: 過去公演の 1行 = 人 × 公演（席種・枚数は列があれば）
+    ticket_history = actual[actual["category"].isin([LARGE, SMALL])][
+        ["person_id", "event_id", "category", "seat_type", "quantity", "ticket", "support"]]
+
+    # 今回の申請: requests (1行 = 1申請) と preferences (1行 = 第1希望 / 振替の各候補)
+    prices = load_seat_prices(prices_path)
+    perf_cat = dict(zip(events["event_id"], events["link_category"]))
+    sheet_of = dict(zip(events["event_id"], events["sheet_name"]))
+    req_rows, pref_rows = [], []
+    for _, r in applications.iterrows():
+        request_id = f"{r['event_id']}#{r['source_row']}"
+        cat = perf_cat[r["event_id"]]
+        price = prices.get((cat, r["seat_type"], name_key(sheet_of[r["event_id"]])),
+                           prices.get((cat, r["seat_type"], "")))
+        req_rows.append({
+            "request_id": request_id, "event_id": r["event_id"], "performance_category": cat,
+            "person_id": r["person_id"], "quantity": r["quantity"], "seat_type_requested": r["seat_type"],
+            "support_expected": r["support"], "ticket_price": price,
+            "ticket_amount": price * r["quantity"] if price is not None else None,
+            "preference_count": (r["show_date"] is not None) + len(r["alternatives"]),
+            "source_row": r["source_row"],
+        })
+        choices = ([(r["show_date"], r["show_time"])] if r["show_date"] is not None else []) + r["alternatives"]
+        for rank, (d, t) in enumerate(choices, start=1):
+            pref_rows.append({"request_id": request_id, "rank": rank, "is_alternative": rank > 1,
+                              "show_date": d, "show_time": t})
+    application_requests = pd.DataFrame(req_rows, columns=[
+        "request_id", "event_id", "performance_category", "person_id", "quantity", "seat_type_requested",
+        "support_expected", "ticket_price", "ticket_amount", "preference_count", "source_row"])
+    application_preferences = pd.DataFrame(
+        pref_rows, columns=["request_id", "rank", "is_alternative", "show_date", "show_time"])
+    if len(applications) and not prices:
+        issues.append({"level": "info", "sheet": "", "row": None,
+                       "message": "config/seat_prices.csv がないためチケット代の見込みは空欄です"})
 
     # 同姓同名で連絡先が一致しない別IDを要確認として報告
     dup = persons.assign(k=persons["name_kanji"].map(name_key)).groupby("k")["person_id"].apply(list)
@@ -304,7 +407,8 @@ def run(paths: list[Path], links_path: Path | None = None) -> Result:
                        "message": f"同姓同名で連絡先が一致しない人物: {', '.join(ids)}（同一人物か確認してください）"})
 
     review = pd.DataFrame(issues, columns=["level", "sheet", "row", "message"])
-    return Result(events, persons, spending, summary, review, issues)
+    return Result(events, persons, spending, summary, ticket_history,
+                  application_requests, application_preferences, review, issues)
 
 
 def select_events(events: pd.DataFrame, n_large: int, n_small: int, n_annual: int = 1,
@@ -328,7 +432,9 @@ def write_outputs(result: Result, out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     tables = {
         "events": result.events, "persons": result.persons, "spending": result.spending,
-        "summary": result.summary, "review": result.review,
+        "summary": result.summary, "ticket_history": result.ticket_history,
+        "application_requests": result.application_requests,
+        "application_preferences": result.application_preferences, "review": result.review,
     }
     written = []
     for name, df in tables.items():
