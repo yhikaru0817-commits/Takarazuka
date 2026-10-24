@@ -194,3 +194,31 @@ class SeatPriceEstimateTest(unittest.TestCase):
         self.assertEqual((req["quantity"], req["seat_type_requested"], req["ticket_amount"], req["support_expected"]),
                          (2, "SS", 25000, 10000))
         self.assertTrue(r.review["message"].str.contains("推定値").any())
+
+
+class MaskTest(unittest.TestCase):
+    def test_mask_keeps_format_but_not_values(self):
+        from takarazuka_data.mask import Masker, mask_sheet
+        m = Masker()
+        raw = pd.DataFrame([
+            ["渤海 申込一覧", "", "", "", "", "", "", ""],
+            ["name(漢字)", "name katakana", "mail", "phone-number", "post-number", "address 1", "Ticket", "備考"],
+            ["架空　花子", "かくう はなこ", "Hanako@Example.com", 9000000001, "〒100-0001", "大阪府架空市1-2-3", 12000, "友人と"],
+            ["架空花子", "カクウハナコ", "hanako@example.com", "０９０－００００－０００１", "", "", 8000, ""],
+        ])
+        out = mask_sheet(raw, m)
+        flat = " ".join(map(str, out.values.ravel()))
+        for secret in ("花子", "ハナコ", "はなこ", "Hanako", "0001", "架空市", "友人", "渤海"):
+            self.assertNotIn(secret, flat)
+        self.assertEqual(list(out.iloc[1]), list(raw.iloc[1]), "列名は残す")
+        self.assertEqual(out.iat[2, 0][2], "　", "全角空白の位置を保つ")
+        self.assertEqual(out.iat[2, 0].replace("　", ""), out.iat[3, 0], "同じ人は同じ架空名")
+        self.assertTrue(all("ぁ" <= c <= "ゖ" or c == " " for c in out.iat[2, 1]), "ひらがなはひらがなのまま")
+        self.assertIsInstance(out.iat[2, 3], int)  # 先頭 0 落ちの数値のまま
+        self.assertEqual(len(str(out.iat[2, 3])), 10)
+        self.assertRegex(out.iat[3, 3], r"^０[０-９]{2}－[０-９]{4}－[０-９]{4}$")
+        self.assertRegex(out.iat[2, 4], r"^〒1\d{2}-\d{4}$")
+        self.assertTrue(out.iat[2, 5].startswith("大阪府"))
+        self.assertTrue(out.iat[2, 2].endswith("@example.com"))
+        self.assertEqual(out.iat[2, 6], 12000, "金額は残す")
+        self.assertNotEqual(Masker().name("架空 花子"), m.name("架空 花子"), "実行ごとに鍵が変わる")

@@ -2,6 +2,7 @@
 # 実データ・出力は絶対にコミットしない（ローカルのみで扱う）
 data/
 output/
+masked/
 *.xlsx
 *.xlsm
 *.xls
