@@ -390,3 +390,46 @@ class RosterSplitTest(unittest.TestCase):
         self.assertTrue(r.match_review["reason"].str.contains("連絡先のない方").any())
         self.assertTrue(r.review["message"].str.contains("同じ名前の人が複数").any())
         self.assertEqual(len(r.spending[r.spending["category"] == ROSTER]), 0)
+
+
+class MaskLeakRegressionTest(unittest.TestCase):
+    """実データで起きた漏れの再発防止（すべて架空の値）。"""
+
+    SECRETS = ("花子", "ハナコ", "hanako", "太郎", "タロウ", "taro", "1234", "5678", "架空町", "夢見ヶ丘", "ゆめみ")
+
+    def assertNoSecrets(self, out):
+        flat = " ".join(map(str, out.values.ravel()))
+        for s in self.SECRETS:
+            self.assertNotIn(s, flat)
+        for v in out.values.ravel():
+            if isinstance(v, str) and "@" in v:
+                self.assertTrue(v.endswith("@example.com"), "実在メールらしき値が残っている")
+
+    def test_data_row_mistaken_for_header(self):
+        # 列名の行がなく、LINE の注文明細のような長い文の行がヘッダと誤認されていた
+        from takarazuka_data.mask import Masker, mask_sheet
+        df = pd.DataFrame([
+            ["2026-09-10 18:21:25", "12月27日11時00分", "・S席(10500円) 1枚・サポート代(任意) 1000円", 11500,
+             "架空 花子", "カクウ ハナコ", "hanako.1234@gmail.com", "090-1234-5678", "665-0835", "兵庫県", "架空町1-2-3"],
+            ["2026-09-11 10:00:00", "12月28日15時00分", "・S席(10500円) 1枚", 10500,
+             "試験 太郎", "シケン タロウ", "taro5678@gmail.com", "080-5678-1234", "100-0001", "東京都", "夢見ヶ丘4-5"],
+        ])
+        out = mask_sheet(df, Masker())
+        self.assertNoSecrets(out)
+        self.assertEqual(out.iat[0, 0], "2026-09-10 18:21:25", "日時は残す")
+        self.assertEqual(out.iat[0, 3], 11500, "金額は残す")
+
+    def test_columns_shift_midway_and_names_next_to_headers(self):
+        from takarazuka_data.mask import Masker, mask_sheet
+        df = pd.DataFrame([
+            ["お名前", "合計金額", "フリガナ", "メールアドレス", "電話番号", "郵便番号", "都道府県", "備考", "架空 花子"],
+            ["架空 花子", 5000, "カクウ ハナコ", "hanako@gmail.com", "090-1234-5678", "665-0835", "兵庫県", "", ""],
+            # ここから列がずれている（メール→電話列、氏名→郵便列、住所→都道府県列、電話が数値で備考列）
+            ["試験 太郎", "シケン タロウ", "", "", "taro@gmail.com", "試験 太郎", "夢見ヶ丘4-5", 8012345678, ""],
+            ["試験 太郎", "夢見ヶ丘4-5", "ゆめみ", "", "", "", "", "", ""],
+        ])
+        out = mask_sheet(df, Masker())
+        self.assertNoSecrets(out)
+        self.assertEqual(list(out.iloc[0, :7]), list(df.iloc[0, :7]), "本物の列名は残す")
+        self.assertEqual(out.iat[1, 1], 5000)
+        self.assertEqual(out.iat[1, 6], "兵庫県", "都道府県だと確かめられる値だけ残す")

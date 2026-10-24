@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import numbers
 import re
 import secrets
 import unicodedata
@@ -22,7 +23,7 @@ from pathlib import Path
 import pandas as pd
 
 from .classify import name_key
-from .columns import PREFECTURES, is_blank, map_header, to_katakana
+from .columns import PREFECTURES, clean_prefecture, is_blank, map_header, to_katakana
 from .pipeline import find_header, read_sheets
 
 KANJI_POOL = "架空試験仮例山川田村林森野原沢谷花春夏秋冬月星雪風空海光音"
@@ -74,7 +75,7 @@ class Masker:
 
     def digits(self, v, kind: str):
         """電話・郵便番号: 桁数・区切り・全角を保ち、先頭 1 桁は残す（0 落ちの確認用）。"""
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
+        if isinstance(v, numbers.Number) and not isinstance(v, bool):
             s = str(int(v)) if float(v).is_integer() else str(v)
             return int(self.digits(s, kind))
         s = str(v)
@@ -122,8 +123,10 @@ class Masker:
 
     def opaque(self, v):
         """内容が分からない列（備考・LINE表示名など）: 日付・数値以外は伏せ字にする。"""
-        if isinstance(v, (int, float, date, datetime, time, pd.Timestamp)) and not isinstance(v, bool):
+        if isinstance(v, (date, datetime, time, pd.Timestamp)):
             return v
+        if isinstance(v, numbers.Number):
+            return safe_number(v, self)
         return "■" * min(len(str(v)), 8)
 
 
@@ -132,30 +135,84 @@ FIELD_MASK = {
     "family_name": Masker.roman, "first_name": Masker.roman,
     "email": Masker.email, "line_id": Masker.line_id, "address1": Masker.address, "address2": Masker.address,
 }
-KEEP_FIELDS = {"prefecture", "ticket", "support", "entry_fee", "total_cost",
-               "seat_type", "quantity", "show_date", "show_time", "alt_dates"}
+AMOUNT_LIKE = {"ticket", "support", "entry_fee", "total_cost", "quantity"}
+DATE_LIKE = {"show_date", "show_time", "alt_dates"}
+
+# 「安全と確認できた値だけ残し、それ以外はすべて伏せる」方針。
+# 列の途中で並びがずれていても、想定外の値は伏せ字になる。
+_AMOUNT_RE = re.compile(r"^[\s¥￥\d,，.．円枚\-－+]*$")
+_STRICT_DATE_RE = re.compile(
+    r"^(?:\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?|\d{1,2}[/月]\d{1,2}日?)?"   # 2026-01-21 / 2026年1月21日 / 1/21
+    r"\s*(?:[(（]?[月火水木金土日]曜?日?[)）]?)?"                              # (水)
+    r"\s*(?:\d{1,2}(?::\d{2}(?::\d{2})?|時(?:\d{1,2}分)?|時半))?$")         # 15:00 / 11時00分
+_PHONE_RE = re.compile(r"^[\d０-９\s\-－ー‐()（）+〒]*$")
+_SEAT_RE = re.compile(r"^(SS|S|A|B)席?$")
+# 列名として残してよい語（実在の氏名にまず含まれない語）
+_LABEL_WORDS = ("金額", "代金", "日付", "日時", "備考", "人数", "枚数", "会費", "返金", "席", "番号", "参加", "名義",
+                "合計", "時間", "公演", "メモ", "サポート", "協力", "グッズ", "チケット", "写真", "振込", "入金", "申込",
+                "曜", "開演", "1枚あたり", "金", "数", "購入", "販売", "支払", "送付", "状況", "済", "希望", "振替",
+                "区分", "種別", "No", "№")
+
+
+def safe_number(v, m: Masker, limit: int = 100_000):
+    """金額・人数・日付のシリアル値などの小さい数は残し、電話番号のような大きい数は架空の数字にする。"""
+    if isinstance(v, bool) or abs(v) < limit:
+        return v
+    return m.digits(v, "num")
+
+
+def safe_label(v, m: Masker):
+    """列名の行: 既知の列名と、ラベルらしい語を含む短い文字列だけ残す。"""
+    if not isinstance(v, str):
+        return safe_number(v, m) if isinstance(v, numbers.Number) else v
+    s = unicodedata.normalize("NFKC", v).strip()
+    if "@" in s or re.search(r"\d{3,}", s) or len(s) > 30:
+        return m.opaque(v)
+    if map_header(s, contains=False) or any(w in s for w in _LABEL_WORDS):
+        return v
+    return m.opaque(v)
+
+
+def safe_value(v, field, m: Masker):
+    if isinstance(v, (date, datetime, time, pd.Timestamp)):
+        return v
+    if isinstance(v, numbers.Number):
+        return safe_number(v, m, 1_000_000 if field in AMOUNT_LIKE else 100_000)
+    s = str(v)
+    n = unicodedata.normalize("NFKC", s).strip()
+    if field in FIELD_MASK:
+        return FIELD_MASK[field](m, s)
+    if field in ("phone", "postal_code"):
+        return m.digits(s, field) if _PHONE_RE.match(n) else m.opaque(v)
+    if field in AMOUNT_LIKE and _AMOUNT_RE.match(n) and not re.search(r"\d{7,}", n.replace(",", "")):
+        return v
+    if field == "prefecture" and clean_prefecture(n) in PREFECTURES:
+        return v
+    if field == "seat_type" and _SEAT_RE.match(n.upper()):
+        return v
+    if _STRICT_DATE_RE.match(n) and re.search(r"\d", n):  # 日付・時刻だと形で確かめられるものだけ
+        return v
+    return m.opaque(v)
 
 
 def mask_sheet(df: pd.DataFrame, m: Masker) -> pd.DataFrame:
-    out = df.copy()
+    out = df.astype(object)
     header_row, mapping = find_header(df)
     start = 0 if header_row is None else header_row + 1
     for r in range(len(df)):
-        if r == header_row:
-            continue  # 列名は残す
         for ci, col in enumerate(df.columns):
             v = df.iat[r, ci]
             if is_blank(v):
                 continue
-            field = mapping.get(col) if r >= start else None
-            if field in KEEP_FIELDS:
+            if r == header_row:
+                out.iat[r, ci] = safe_label(v, m)
                 continue
-            if field in ("phone", "postal_code"):
-                out.iat[r, ci] = m.digits(v, field)
-            elif field in FIELD_MASK:
-                out.iat[r, ci] = FIELD_MASK[field](m, str(v))
-            else:
-                out.iat[r, ci] = m.opaque(v)  # タイトル行・未対応列・ヘッダ不明シート
+            field = mapping.get(col) if r >= start else None
+            out.iat[r, ci] = safe_value(v, field, m)
+            # 最後の安全確認: 実在のメールアドレスらしき値は必ず伏せる
+            o = out.iat[r, ci]
+            if isinstance(o, str) and "@" in o and not o.strip().lower().endswith("@example.com"):
+                out.iat[r, ci] = m.opaque(o)
     return out
 
 

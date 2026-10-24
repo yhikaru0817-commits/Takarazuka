@@ -79,18 +79,26 @@ def header_key(h) -> str:
 ALIAS_TO_FIELD = {header_key(a): f for f, aliases in _ALIASES.items() for a in aliases}
 
 
-def map_header(h) -> str | None:
+def map_header(h, contains: bool = True) -> str | None:
     if h is None or (isinstance(h, float) and math.isnan(h)):
         return None
     key = header_key(h)
     if key in ALIAS_TO_FIELD:
         return ALIAS_TO_FIELD[key]
+    if not contains or _looks_like_data(str(h)):
+        return None
     # LINE のフォーム等で「希望枚数を入力してください」のような長い列名にも対応（最長一致、3文字以上）
     hits = [a for a in _CONTAINS_ALIASES if a in key]
     return ALIAS_TO_FIELD[max(hits, key=len)] if hits else None
 
 
 _CONTAINS_ALIASES = [a for a in ALIAS_TO_FIELD if len(a) >= 3]
+
+
+def _looks_like_data(h: str) -> bool:
+    """メールアドレス・数字の多い値・長い文章は列名とみなさない（データ行をヘッダと誤認しないため）。"""
+    s = unicodedata.normalize("NFKC", h)
+    return "@" in s or bool(re.search(r"\d{3,}", s)) or len(s) > 40
 
 
 def add_aliases(mapping: dict) -> None:
