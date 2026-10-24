@@ -36,6 +36,7 @@ class Result:
     ticket_history: pd.DataFrame
     application_requests: pd.DataFrame
     application_preferences: pd.DataFrame
+    seat_price_estimates: pd.DataFrame
     review: pd.DataFrame
     issues: list = field(default_factory=list)
 
@@ -50,11 +51,11 @@ def read_sheets(paths: list[Path]):
             for name, df in pd.read_excel(p, sheet_name=None, header=None, dtype=object).items():
                 yield name, df, p.name
         elif suffix == ".csv":
-            for enc in ("utf-8-sig", "cp932"):
+            for enc in ("utf-8-sig", "cp932", "utf-16"):
                 try:
                     df = pd.read_csv(p, header=None, dtype=object, encoding=enc)
                     break
-                except UnicodeDecodeError:
+                except (UnicodeDecodeError, UnicodeError):
                     continue
             else:
                 raise ValueError(f"文字コードを判定できません: {p.name}")
@@ -184,6 +185,28 @@ def load_seat_prices(path: Path | None) -> dict:
             perf = name_key(r.get("performance_sheet", ""))
             prices[(r["category"].strip().lower(), r["seat_type"].strip().upper(), perf)] = amount
     return prices
+
+
+def estimate_seat_prices(ticket_history: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+    """過去公演の チケット代 ÷ 枚数 から席種ごとの1枚価格を推定する。
+
+    最も新しい公演で最も多く出た単価を採用する（価格改定に追従するため）。
+    """
+    cols = ["category", "seat_type", "price", "sample_count", "price_variants", "latest_event_id"]
+    h = ticket_history.copy()
+    h["quantity"] = pd.to_numeric(h["quantity"], errors="coerce")
+    h = h[(h["seat_type"] != "") & (h["quantity"] > 0) & (h["ticket"] > 0)]
+    if h.empty:
+        return pd.DataFrame(columns=cols)
+    h["unit"] = (h["ticket"] / h["quantity"]).round().astype(int)
+    h = h.merge(events[["event_id", "event_date"]], on="event_id")
+    out = []
+    for (cat, seat), g in h.groupby(["category", "seat_type"]):
+        latest = g[g["event_date"] == g["event_date"].max()]
+        out.append({"category": cat, "seat_type": seat, "price": int(latest["unit"].mode().iloc[0]),
+                    "sample_count": len(g), "price_variants": " / ".join(map(str, sorted(g["unit"].unique()))),
+                    "latest_event_id": latest["event_id"].iloc[0]})
+    return pd.DataFrame(out, columns=cols)
 
 
 def link_events(events: pd.DataFrame, overrides: dict, issue_for) -> pd.DataFrame:
@@ -370,7 +393,11 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
         ["person_id", "event_id", "category", "seat_type", "quantity", "ticket", "support"]]
 
     # 今回の申請: requests (1行 = 1申請) と preferences (1行 = 第1希望 / 振替の各候補)
+    seat_price_estimates = estimate_seat_prices(ticket_history, events)
     prices = load_seat_prices(prices_path)
+    # config が無い席種は過去データからの推定価格で補う
+    for _, e in seat_price_estimates.iterrows():
+        prices.setdefault((e["category"], e["seat_type"], ""), e["price"])
     perf_cat = dict(zip(events["event_id"], events["link_category"]))
     sheet_of = dict(zip(events["event_id"], events["sheet_name"]))
     req_rows, pref_rows = [], []
@@ -398,7 +425,10 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
         pref_rows, columns=["request_id", "rank", "is_alternative", "show_date", "show_time"])
     if len(applications) and not prices:
         issues.append({"level": "info", "sheet": "", "row": None,
-                       "message": "config/seat_prices.csv がないためチケット代の見込みは空欄です"})
+                       "message": "席種の価格が config にも過去データにもないため、チケット代の見込みは空欄です"})
+    if len(applications) and not seat_price_estimates.empty and not load_seat_prices(prices_path):
+        issues.append({"level": "info", "sheet": "", "row": None,
+                       "message": "チケット価格は過去データからの推定値です（seat_price_estimates.csv を確認してください）"})
 
     # 同姓同名で連絡先が一致しない別IDを要確認として報告
     dup = persons.assign(k=persons["name_kanji"].map(name_key)).groupby("k")["person_id"].apply(list)
@@ -408,7 +438,7 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
 
     review = pd.DataFrame(issues, columns=["level", "sheet", "row", "message"])
     return Result(events, persons, spending, summary, ticket_history,
-                  application_requests, application_preferences, review, issues)
+                  application_requests, application_preferences, seat_price_estimates, review, issues)
 
 
 def select_events(events: pd.DataFrame, n_large: int, n_small: int, n_annual: int = 1,
@@ -434,7 +464,8 @@ def write_outputs(result: Result, out_dir: Path) -> list[Path]:
         "events": result.events, "persons": result.persons, "spending": result.spending,
         "summary": result.summary, "ticket_history": result.ticket_history,
         "application_requests": result.application_requests,
-        "application_preferences": result.application_preferences, "review": result.review,
+        "application_preferences": result.application_preferences,
+        "seat_price_estimates": result.seat_price_estimates, "review": result.review,
     }
     written = []
     for name, df in tables.items():

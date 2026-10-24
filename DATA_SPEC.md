@@ -52,7 +52,7 @@
 | person_id | |
 | quantity | 申請枚数 |
 | seat_type_requested | 申請時の席種。未確定のため large は `SS`、small は `S` が既定 |
-| support_expected | サポート代（見込額）。**申請1件あたりの金額**として扱っています |
+| support_expected | サポート代（見込額）。**申請1件あたりの金額**（1枚あたりではない） |
 | ticket_price | 申請席種の1枚あたり価格（`config/seat_prices.csv` から） |
 | ticket_amount | quantity × ticket_price |
 | preference_count | 第1希望＋振替の候補数 |
@@ -67,8 +67,9 @@
 
 ## 席種と価格
 - large: `SS / S / A / B`、small: `S` のみ。
-- 価格は `config/seat_prices.csv`（`category,seat_type,price,performance_sheet`）。
-  `performance_sheet` を書いた行はその公演だけの価格として優先されます。
+- 価格の優先順: `config/seat_prices.csv` の公演指定行 → 同ファイルの共通行 → 過去データからの推定値。
+- `seat_price_estimates` — 過去公演の チケット代 ÷ 枚数 から推定した1枚価格:
+  `category, seat_type, price（最新公演で最多の単価）, sample_count, price_variants（過去に出た単価の一覧）, latest_event_id`
 - 席種確定後の実際の金額は、確定席種 × 価格で配分システム側で再計算してください。
 
 ## persons — 人物（個人情報）

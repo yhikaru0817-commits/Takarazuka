@@ -79,7 +79,15 @@ ALIAS_TO_FIELD = {header_key(a): f for f, aliases in _ALIASES.items() for a in a
 def map_header(h) -> str | None:
     if h is None or (isinstance(h, float) and math.isnan(h)):
         return None
-    return ALIAS_TO_FIELD.get(header_key(h))
+    key = header_key(h)
+    if key in ALIAS_TO_FIELD:
+        return ALIAS_TO_FIELD[key]
+    # LINE のフォーム等で「希望枚数を入力してください」のような長い列名にも対応（最長一致、3文字以上）
+    hits = [a for a in _CONTAINS_ALIASES if a in key]
+    return ALIAS_TO_FIELD[max(hits, key=len)] if hits else None
+
+
+_CONTAINS_ALIASES = [a for a in ALIAS_TO_FIELD if len(a) >= 3]
 
 
 # ---------- 値の正規化 ----------

@@ -167,3 +167,30 @@ class PipelineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SeatPriceEstimateTest(unittest.TestCase):
+    def test_estimate_from_history_and_csv_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            a = person("架空 花子", "カクウ ハナコ", "hanako@example.com", "090-0000-0001", "100-0001")
+            b = person("試験 太郎", "シケン タロウ", "taro@example.com", "080-0000-0002", "200-0002")
+            cols = STD + ["席種", "枚数", "Ticket", "Support"]
+            pd.DataFrame([a + ["SS", 2, 20000, 0], b + ["S", 1, 8000, 0]], columns=cols).to_csv(
+                d / "2025_0601_大公演_旧作.csv", index=False)
+            # 価格改定後: 新しい公演の単価を採用する
+            pd.DataFrame([a + ["SS", 1, 12500, 3000], b + ["SS", 3, 37500, 0]], columns=cols).to_csv(
+                d / "2026_0121_大公演_渤海.csv", index=False)
+            # LINE からの申請 CSV（長い列名・cp932）
+            pd.DataFrame([a + ["11/12 15:00", "2", "", "10000"]],
+                         columns=STD + ["第1希望の公演日時", "希望枚数を入力してください", "席種", "サポート代（見込額）"]
+                         ).to_csv(d / "2026_1105_大公演_星の詩_申請.csv", index=False, encoding="cp932")
+            r = run(sorted(d.glob("*.csv")))
+        est = r.seat_price_estimates.set_index("seat_type")
+        self.assertEqual(est.at["SS", "price"], 12500)
+        self.assertEqual(est.at["SS", "price_variants"], "10000 / 12500")
+        self.assertEqual(est.at["S", "price"], 8000)
+        req = r.application_requests.iloc[0]
+        self.assertEqual((req["quantity"], req["seat_type_requested"], req["ticket_amount"], req["support_expected"]),
+                         (2, "SS", 25000, 10000))
+        self.assertTrue(r.review["message"].str.contains("推定値").any())

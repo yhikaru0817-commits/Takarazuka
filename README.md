@@ -21,8 +21,16 @@ python -m takarazuka_data            # 既定: data/raw → output
 python -m takarazuka_data 入力フォルダ -o 出力フォルダ
 ```
 
+**列名やシート名の確認だけしたいとき**（中身は表示されないので、相談用に貼り付けても安全です）:
+
+```bash
+python -m takarazuka_data --inspect
+```
+
 Google スプレッドシートの場合は「ファイル → ダウンロード → Microsoft Excel (.xlsx)」で保存してください。
-CSV の場合はファイル名がシート名として扱われます。
+CSV の場合はファイル名がシート名として扱われます。公式LINEから出力した申請CSVは
+`2026_1105_大公演_星の詩_申請.csv` のようにファイル名を変えてから置いてください（文字コードは UTF-8 / Shift_JIS どちらでも可）。
+LINEフォームの「希望枚数を入力してください」のような長い列名も、含まれる語（希望枚数など）で判定します。
 
 ## シート名の規則と分類
 
@@ -54,7 +62,9 @@ CSV の場合はファイル名がシート名として扱われます。
   公演日と開演時間が別の列（`公演日` と `開演時間`）でも可。
 - 振替は複数列でも、1つのセルに `11/13 11:00、11/14 15:00` のように並べても可。
 - 席種: large は `SS / S / A / B`、small は `S` のみ。空欄は申請時の既定（large: `SS`、small: `S`）。
-- 席種ごとの価格は `config/seat_prices.example.csv` を `config/seat_prices.csv` にコピーして実際の金額に書き換えてください（例の金額は仮の値です）。
+- 席種ごとの価格は、過去の公演シートの「チケット代 ÷ 枚数」から自動で推定します（最も新しい公演の単価を採用）。
+  推定結果は `seat_price_estimates.csv` に出ます。過去の単価が複数あれば `price_variants` に並ぶので確認してください。
+  推定できない席種や、公演ごとに価格を指定したい場合は `config/seat_prices.example.csv` を `config/seat_prices.csv` にコピーして書いてください（こちらが優先されます。例の金額は仮の値です）。
 - 申請のサポート代は**見込額**なので、過去の実績（spending / summary）には入れず、別の表に出力します。
 
 過去の公演シートに `席種` `枚数` の列があれば、それも `ticket_history` に取り込みます。
@@ -90,6 +100,7 @@ CSV の場合はファイル名がシート名として扱われます。
 | `ticket_history.csv` | 過去公演の 人 × 公演（席種・枚数・チケット代・サポート代） |
 | `application_requests.csv` | 今回の申請 1件ずつ（枚数・席種・サポート代見込額・チケット代見込み） |
 | `application_preferences.csv` | 申請ごとの第1希望・振替の日時候補 |
+| `seat_price_estimates.csv` | 過去データから推定した席種ごとの1枚価格 |
 | `review.csv` | 要確認事項（不正な値、紐づけ不可、同姓同名など）。シート名と行番号付き |
 | `formatted.xlsx` | 上記をまとめた Excel |
 
