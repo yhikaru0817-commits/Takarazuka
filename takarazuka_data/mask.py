@@ -100,6 +100,9 @@ class Masker:
             fake = fake[:1].upper() + fake[1:]
         return fake + (at + "example.com" if at else "")
 
+    def line_id(self, v: str) -> str:
+        return self._letters(v, "line", v.strip(), "0123456789abcdef", keep=lambda c: not c.isalnum() or c == "U")
+
     def address(self, v: str) -> str:
         """住所: 先頭の都道府県と区切り記号は残し、文字は〇、数字は架空の数字にする。"""
         s = str(v)
@@ -127,7 +130,7 @@ class Masker:
 FIELD_MASK = {
     "name_kanji": Masker.name, "name_kana": Masker.kana,
     "family_name": Masker.roman, "first_name": Masker.roman,
-    "email": Masker.email, "address1": Masker.address, "address2": Masker.address,
+    "email": Masker.email, "line_id": Masker.line_id, "address1": Masker.address, "address2": Masker.address,
 }
 KEEP_FIELDS = {"prefecture", "ticket", "support", "entry_fee", "total_cost",
                "seat_type", "quantity", "show_date", "show_time", "alt_dates"}

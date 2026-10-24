@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .classify import classify_sheet
 from .columns import is_blank, map_header
+from .identity import absorb_review_decisions, save_master
 from .pipeline import find_header, read_sheets, run, write_outputs
 
 
@@ -31,10 +32,14 @@ def main(argv=None):
     ap.add_argument("-o", "--output", default="output", help="出力フォルダ")
     ap.add_argument("--links", default="config/event_links.csv", help="お茶会・親睦会の紐づけ指定")
     ap.add_argument("--prices", default="config/seat_prices.csv", help="席種ごとのチケット価格")
+    ap.add_argument("--master", default="data/master", help="顧客マスターの保存先")
     ap.add_argument("--inspect", action="store_true", help="シート名と列名だけを表示（中身は表示しない）")
     args = ap.parse_args(argv)
 
     src = Path(args.input)
+    if not src.exists():
+        src.mkdir(parents=True)
+        raise SystemExit(f"{src} フォルダを作りました。ここに Excel/CSV を入れてもう一度実行してください")
     paths = sorted(p for p in src.iterdir()
                    if p.suffix.lower() in (".xlsx", ".xlsm", ".xls", ".csv") and not p.name.startswith("~$"))
     if not paths:
@@ -43,12 +48,21 @@ def main(argv=None):
     if args.inspect:
         inspect(paths)
         return
-    result = run(paths, Path(args.links), Path(args.prices))
-    written = write_outputs(result, Path(args.output))
+    master_dir, out_dir = Path(args.master), Path(args.output)
+    absorbed = absorb_review_decisions(out_dir / "match_review.csv", master_dir)
+    if absorbed:
+        print(f"前回の確認結果（同一/別人）を {absorbed} 件取り込みました")
+    result = run(paths, Path(args.links), Path(args.prices), master_dir)
+    save_master(result.master, master_dir)
+    written = write_outputs(result, out_dir)
 
     # 個人情報は表示せず件数のみ
     print(f"ファイル: {len(paths)} / イベント: {len(result.events)} / 人物: {len(result.persons)}")
     print(f"今回の申請: {len(result.application_requests)} 件")
+    print(f"顧客マスター: {(result.master['merged_into'] == '').sum()} 人（{master_dir}）")
+    if len(result.match_review):
+        print(f"★ 同一人物か確認が必要な組: {len(result.match_review)} 件 → {out_dir / 'match_review.csv'} の"
+              " decision 列に「同一」か「別人」を書いて保存し、もう一度実行してください")
     for cat, n in result.events["category"].value_counts().items():
         print(f"  {cat}: {n}")
     levels = Counter(i["level"] for i in result.issues)

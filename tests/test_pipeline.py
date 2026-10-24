@@ -62,8 +62,8 @@ class ColumnsTest(unittest.TestCase):
         self.assertEqual(classify_sheet("2026_1105_大公演_星の詩_申請").category, APPLICATION)
 
 
-def person(kanji, kana, mail, phone, zip_, pref="大阪府"):
-    return [kanji, kana, "", "", mail, phone, zip_, pref, "架空市1-2-3", ""]
+def person(kanji, kana, mail, phone, zip_, pref="大阪府", addr=None):
+    return [kanji, kana, "", "", mail, phone, zip_, pref, addr or f"架空市{phone}", ""]
 
 
 class PipelineTest(unittest.TestCase):
@@ -126,11 +126,13 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(hanako.iloc[0]["event_count"], 5, "申請は実績に数えない")
         self.assertEqual(hanako.iloc[0]["email"], "hanako@example.com")
         self.assertEqual(len(p[p["name_kanji"] == "試験 太郎"]), 2, "同姓同名でも連絡先が違えば別人")
-        self.assertTrue(self.result.review["message"].str.contains("同姓同名").any())
+        mr = self.result.match_review
+        self.assertEqual(len(mr), 1)
+        self.assertEqual(mr.iloc[0]["reason"], "名前が同じで連絡先が違う")
 
     def test_amounts(self):
-        s = self.result.summary.set_index("person_id")
-        hanako_id = self.result.persons.query("name_kana == 'カクウ ハナコ'")["person_id"].iloc[0]
+        s = self.result.summary.set_index("customer_id")
+        hanako_id = self.result.persons.query("name_kana == 'カクウ ハナコ'")["customer_id"].iloc[0]
         self.assertEqual(s.at[hanako_id, "large_ticket"], 24000 + 30000)
         self.assertEqual(s.at[hanako_id, "large_support"], 5000 + 10000)
         self.assertEqual(s.at[hanako_id, "small_ticket"], 8000)
@@ -144,7 +146,7 @@ class PipelineTest(unittest.TestCase):
         req = self.result.application_requests
         pref = self.result.application_preferences
         p = self.result.persons.set_index("name_kana")
-        hanako = req[req["person_id"] == p.at["カクウ ハナコ", "person_id"]].iloc[0]
+        hanako = req[req["customer_id"] == p.at["カクウ ハナコ", "customer_id"]].iloc[0]
         self.assertEqual((hanako["quantity"], hanako["seat_type_requested"], hanako["support_expected"]), (2, "SS", 20000))
         self.assertEqual((hanako["ticket_price"], hanako["ticket_amount"]), (12000, 24000))
         choices = pref[pref["request_id"] == hanako["request_id"]]
@@ -222,3 +224,73 @@ class MaskTest(unittest.TestCase):
         self.assertTrue(out.iat[2, 2].endswith("@example.com"))
         self.assertEqual(out.iat[2, 6], 12000, "金額は残す")
         self.assertNotEqual(Masker().name("架空 花子"), m.name("架空 花子"), "実行ごとに鍵が変わる")
+
+
+class MasterTest(unittest.TestCase):
+    """顧客マスター: 番号の維持、人の判定（同一/別人）の反映。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        self.raw, self.master, self.out = self.d / "raw", self.d / "master", self.d / "out"
+        self.raw.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, sheet, rows, extra=("Ticket", "Support")):
+        pd.DataFrame(rows, columns=STD + list(extra)).to_csv(self.raw / f"{sheet}.csv", index=False)
+
+    def run_cli(self):
+        from takarazuka_data.__main__ import main
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            main([str(self.raw), "-o", str(self.out), "--master", str(self.master),
+                  "--links", str(self.d / "none.csv"), "--prices", str(self.d / "none.csv")])
+        return (pd.read_csv(self.out / "persons.csv", dtype=str).fillna(""),
+                pd.read_csv(self.out / "match_review.csv", dtype=str).fillna(""))
+
+    def test_ids_are_stable_and_matching_uses_address_variants(self):
+        a = person("髙橋 花子", "タカハシ ハナコ", "", "", "", addr="架空市中央1丁目2番3号")
+        b = person("試験 太郎", "シケン タロウ", "taro@example.com", "", "")
+        self.write("2026_0121_大公演_渤海", [b + [10000, 0], a + [12000, 1000]])
+        persons, _ = self.run_cli()
+        ids = dict(zip(persons["name_kana"], persons["customer_id"]))
+        self.assertEqual(ids, {"シケン タロウ": "C00001", "タカハシ ハナコ": "C00002"})
+
+        # 次回: 新しい人が先頭の行に来ても、既存の番号は変わらない。住所の表記ゆれ・異体字も同一人物
+        new = person("新規 由美", "シンキ ユミ", "yumi@example.com", "", "")
+        a2 = person("高橋 花子", "タカハシ ハナコ", "", "", "", addr="架空市中央1-2-3")
+        self.write("2026_0415_小公演_春の夢", [new + [8000, 0], a2 + [8000, 500]])
+        persons, _ = self.run_cli()
+        ids = dict(zip(persons["name_kana"], persons["customer_id"]))
+        self.assertEqual(ids, {"シケン タロウ": "C00001", "タカハシ ハナコ": "C00002", "シンキ ユミ": "C00003"})
+        self.assertTrue(any((self.master / "backup").iterdir()), "上書き前にバックアップを取る")
+
+    def test_review_decisions_are_applied_on_next_run(self):
+        # 同じ電話で名前が違う（改姓など）→ 自動では結びつけず確認に回す
+        a = person("架空 花子", "カクウ ハナコ", "", "090-0000-0001", "")
+        a_new = person("試験 花子", "シケン ハナコ", "", "090-0000-0001", "")
+        self.write("2026_0121_大公演_渤海", [a + [10000, 0]])
+        self.write("2026_0415_小公演_春の夢", [a_new + [8000, 0]])
+        persons, review = self.run_cli()
+        self.assertEqual(len(persons), 2)
+        self.assertIn("電話が同じで名前が違う", review.iloc[0]["reason"])
+
+        review.loc[0, "decision"] = "同一"
+        review.to_csv(self.out / "match_review.csv", index=False, encoding="cp932")  # Excel で保存した想定
+        persons, review = self.run_cli()
+        self.assertEqual(len(persons), 1, "「同一」と書いた組は統合される")
+        self.assertEqual(persons.iloc[0]["customer_id"], "C00001")
+        self.assertEqual(len(review), 0, "判定済みの組は再び聞かない")
+        summary = pd.read_csv(self.out / "summary.csv")
+        self.assertEqual(int(summary["total"].sum()), 18000)
+
+    def test_line_id_links_people(self):
+        a = person("架空 花子", "カクウ ハナコ", "", "", "")
+        self.write("2026_0121_大公演_渤海", [a + ["U0123abcd", 10000, 0]], extra=("LINE ID", "Ticket", "Support"))
+        a2 = person("架空花子", "", "", "", "")
+        self.write("2026_0415_小公演_春の夢", [a2 + ["U0123abcd", 8000, 0]], extra=("LINE ID", "Ticket", "Support"))
+        persons, _ = self.run_cli()
+        self.assertEqual(len(persons), 1)
+        self.assertEqual(persons.iloc[0]["line_id"], "U0123abcd")

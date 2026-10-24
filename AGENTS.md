@@ -10,7 +10,7 @@
 
 ## 構成
 - `takarazuka_data/` : データ整形（`python -m takarazuka_data`）
-- 出力の仕様は `DATA_SPEC.md`。配分システムは `person_id` をキーに出力CSVを読む。
+- 出力の仕様は `DATA_SPEC.md`。配分システムは `customer_id` をキーに出力CSVを読む。
 
 ## テスト
 ```bash

@@ -20,6 +20,7 @@ PERSON_FIELDS = [
     "prefecture",
     "address1",
     "address2",
+    "line_id",
 ]
 AMOUNT_FIELDS = ["ticket", "support", "entry_fee", "total_cost"]
 # 公演・申請シートで任意に使える列
@@ -53,6 +54,7 @@ _ALIASES = {
     "prefecture": ["prefecture", "pref", "都道府県", "県"],
     "address1": ["address1", "address", "住所1", "住所", "市区町村", "住所(市区町村)"],
     "address2": ["address2", "住所2", "建物名", "番地以降", "住所(建物名)"],
+    "line_id": ["lineid", "lineuserid", "lineユーザーid", "userid", "ラインid", "lineアカウントid"],
     "ticket": ["ticket", "チケット", "チケット代", "チケット金額", "チケット代金"],
     "support": ["support", "応援", "応援金", "応援費", "サポート", "サポート代", "サポート代(見込額)", "サポート見込額",
                 "見込額", "お花代", "花代", "支援", "支援金"],

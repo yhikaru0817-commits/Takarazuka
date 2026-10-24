@@ -5,12 +5,14 @@
 """
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
 
+from .identity import (
+    assign_customer_ids, load_decisions, load_master, review_candidates, update_master,
+)
 from .classify import (
     ANNUAL, APPLICATION, GOODS, LARGE, SMALL, SOCIAL, TEA_PARTY, UNKNOWN,
     SheetInfo, classify_sheet, name_key,
@@ -37,6 +39,8 @@ class Result:
     application_requests: pd.DataFrame
     application_preferences: pd.DataFrame
     seat_price_estimates: pd.DataFrame
+    match_review: pd.DataFrame
+    master: pd.DataFrame
     review: pd.DataFrame
     issues: list = field(default_factory=list)
 
@@ -90,6 +94,7 @@ def normalize_row(raw: dict, issue) -> dict:
         "prefecture": clean_prefecture(raw.get("prefecture")),
         "address1": clean_text(raw.get("address1")),
         "address2": clean_text(raw.get("address2")),
+        "line_id": clean_text(raw.get("line_id")).replace(" ", ""),
     }
     rec["phone"], err = clean_phone(raw.get("phone"))
     if err:
@@ -112,51 +117,6 @@ def normalize_row(raw: dict, issue) -> dict:
 
 def _is_total_row(raw: dict) -> bool:
     return any(str(raw.get(f, "")).strip() in ("合計", "計", "小計", "総計") for f in ("name_kanji", "name_kana"))
-
-
-# ---------- 名寄せ ----------
-
-class _UnionFind:
-    def __init__(self):
-        self.parent = {}
-
-    def find(self, x):
-        self.parent.setdefault(x, x)
-        while self.parent[x] != x:
-            self.parent[x] = self.parent[self.parent[x]]
-            x = self.parent[x]
-        return x
-
-    def union(self, a, b):
-        ra, rb = self.find(a), self.find(b)
-        if ra != rb:
-            self.parent[max(ra, rb)] = min(ra, rb)
-
-
-def _identity_keys(r) -> list[str]:
-    """同一人物とみなすキー。家族で連絡先を共有するケースを考慮し、必ず名前と組み合わせる。"""
-    names = [k for k in (name_key(r["name_kanji"]), name_key(r["name_kana"])) if k]
-    contacts = [("mail", r["email"]), ("tel", r["phone"]), ("zip", r["postal_code"])]
-    keys = [f"{n}|{t}:{v}" for n in names for t, v in contacts if v]
-    if not keys:  # 連絡先なし → 名前のみで識別（要確認として報告）
-        keys = [f"{n}|-" for n in names]
-    return keys
-
-
-def assign_person_ids(rows: pd.DataFrame) -> pd.Series:
-    uf = _UnionFind()
-    row_keys = []
-    for _, r in rows.iterrows():
-        keys = _identity_keys(r)
-        for k in keys[1:]:
-            uf.union(keys[0], k)
-        row_keys.append(keys[0] if keys else None)
-    roots = [uf.find(k) if k else None for k in row_keys]
-    # クラスタ内の最小キーのハッシュを ID にする（個人情報は ID に含まれない）
-    return pd.Series(
-        ["P" + hashlib.sha256(k.encode()).hexdigest()[:10] if k else "" for k in roots],
-        index=rows.index,
-    )
 
 
 # ---------- イベント紐づけ ----------
@@ -275,7 +235,9 @@ def _ticket_fields(raw: dict, info: SheetInfo, issue) -> dict:
     return rec
 
 
-def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | None = None) -> Result:
+def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | None = None,
+        master_dir: Path | None = None) -> Result:
+    """master_dir を渡すと顧客マスターを読み、顧客番号を維持する（保存は save_master で行う）。"""
     issues = []
 
     def issue_for(sheet, row=None):
@@ -352,23 +314,30 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
 
     extra = ["seat_type", "quantity", "show_date", "show_time", "alternatives"]
     rows = pd.DataFrame(data_rows, columns=PERSON_FIELDS + AMOUNT_FIELDS + extra + ["event_id", "source_row"])
-    rows["person_id"] = assign_person_ids(rows) if len(rows) else pd.Series(dtype=str)
     rows = rows.merge(events[["event_id", "category", "effective_date"]], on="event_id", how="left")
+    master, decisions = load_master(master_dir), load_decisions(master_dir)
+    global_issue = issue_for("")
+    rows["customer_id"], master = assign_customer_ids(rows, master, decisions, global_issue)
+    master = update_master(master, rows)
+    match_review = review_candidates(rows, master, decisions)
+    if len(match_review):
+        global_issue("review", f"同一人物か確認が必要な組が {len(match_review)} 件あります"
+                               "（match_review.csv の decision 列に「同一」か「別人」を書いてください）")
     applications = rows[rows["category"] == APPLICATION]
     actual = rows[rows["category"] != APPLICATION]
 
     # persons: 各項目について最新イベントの値を採用
     latest_first = rows.sort_values("effective_date", ascending=False, na_position="last")
-    persons = (latest_first.replace("", pd.NA).groupby("person_id")[PERSON_FIELDS].first()
+    persons = (latest_first.replace("", pd.NA).groupby("customer_id")[PERSON_FIELDS].first()
                .fillna("").reset_index())
-    counts = actual.groupby("person_id")["event_id"].nunique().rename("event_count")
-    persons = persons.merge(counts, on="person_id", how="left")
+    counts = actual.groupby("customer_id")["event_id"].nunique().rename("event_count")
+    persons = persons.merge(counts, on="customer_id", how="left")
     persons["event_count"] = persons["event_count"].fillna(0).astype(int)
     persons["is_new"] = persons["event_count"] == 0  # 実績なし（今回の申請が初めて）
 
     # spending: 縦持ち（1行 = 人 × イベント × 費目）。実績のみ
     spending = actual.melt(
-        id_vars=["person_id", "event_id", "category", "source_row"], value_vars=AMOUNT_FIELDS,
+        id_vars=["customer_id", "event_id", "category", "source_row"], value_vars=AMOUNT_FIELDS,
         var_name="item", value_name="amount")
     allowed = spending.apply(lambda r: r["item"] in EXPECTED_AMOUNTS[r["category"]], axis=1)
     stray = spending[~allowed & (spending["amount"] != 0)]
@@ -380,17 +349,17 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
     # summary: 人 × 種別の合計金額（公演はチケット代とサポート代を分ける）
     key = spending["category"] + "_" + spending["item"]
     key = key.where(spending["category"].isin([LARGE, SMALL]), spending["category"])
-    summary = spending.assign(key=key).pivot_table(index="person_id", columns="key", values="amount",
+    summary = spending.assign(key=key).pivot_table(index="customer_id", columns="key", values="amount",
                                                    aggfunc="sum", fill_value=0)
     cols = ["large_ticket", "large_support", "small_ticket", "small_support", TEA_PARTY, SOCIAL, ANNUAL, GOODS]
-    summary = summary.reindex(index=persons["person_id"], columns=cols, fill_value=0).fillna(0).astype(int)
+    summary = summary.reindex(index=persons["customer_id"], columns=cols, fill_value=0).fillna(0).astype(int)
     summary["support_total"] = summary["large_support"] + summary["small_support"]
     summary["total"] = summary[cols].sum(axis=1)
     summary = summary.reset_index().rename_axis(columns=None)
 
     # ticket_history: 過去公演の 1行 = 人 × 公演（席種・枚数は列があれば）
     ticket_history = actual[actual["category"].isin([LARGE, SMALL])][
-        ["person_id", "event_id", "category", "seat_type", "quantity", "ticket", "support"]]
+        ["customer_id", "event_id", "category", "seat_type", "quantity", "ticket", "support"]]
 
     # 今回の申請: requests (1行 = 1申請) と preferences (1行 = 第1希望 / 振替の各候補)
     seat_price_estimates = estimate_seat_prices(ticket_history, events)
@@ -408,7 +377,7 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
                            prices.get((cat, r["seat_type"], "")))
         req_rows.append({
             "request_id": request_id, "event_id": r["event_id"], "performance_category": cat,
-            "person_id": r["person_id"], "quantity": r["quantity"], "seat_type_requested": r["seat_type"],
+            "customer_id": r["customer_id"], "quantity": r["quantity"], "seat_type_requested": r["seat_type"],
             "support_expected": r["support"], "ticket_price": price,
             "ticket_amount": price * r["quantity"] if price is not None else None,
             "preference_count": (r["show_date"] is not None) + len(r["alternatives"]),
@@ -419,7 +388,7 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
             pref_rows.append({"request_id": request_id, "rank": rank, "is_alternative": rank > 1,
                               "show_date": d, "show_time": t})
     application_requests = pd.DataFrame(req_rows, columns=[
-        "request_id", "event_id", "performance_category", "person_id", "quantity", "seat_type_requested",
+        "request_id", "event_id", "performance_category", "customer_id", "quantity", "seat_type_requested",
         "support_expected", "ticket_price", "ticket_amount", "preference_count", "source_row"])
     application_preferences = pd.DataFrame(
         pref_rows, columns=["request_id", "rank", "is_alternative", "show_date", "show_time"])
@@ -430,15 +399,9 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
         issues.append({"level": "info", "sheet": "", "row": None,
                        "message": "チケット価格は過去データからの推定値です（seat_price_estimates.csv を確認してください）"})
 
-    # 同姓同名で連絡先が一致しない別IDを要確認として報告
-    dup = persons.assign(k=persons["name_kanji"].map(name_key)).groupby("k")["person_id"].apply(list)
-    for ids in dup[dup.map(len) > 1]:
-        issues.append({"level": "review", "sheet": "", "row": None,
-                       "message": f"同姓同名で連絡先が一致しない人物: {', '.join(ids)}（同一人物か確認してください）"})
-
     review = pd.DataFrame(issues, columns=["level", "sheet", "row", "message"])
     return Result(events, persons, spending, summary, ticket_history,
-                  application_requests, application_preferences, seat_price_estimates, review, issues)
+                  application_requests, application_preferences, seat_price_estimates, match_review, master, review, issues)
 
 
 def select_events(events: pd.DataFrame, n_large: int, n_small: int, n_annual: int = 1,
@@ -465,7 +428,8 @@ def write_outputs(result: Result, out_dir: Path) -> list[Path]:
         "summary": result.summary, "ticket_history": result.ticket_history,
         "application_requests": result.application_requests,
         "application_preferences": result.application_preferences,
-        "seat_price_estimates": result.seat_price_estimates, "review": result.review,
+        "seat_price_estimates": result.seat_price_estimates, "match_review": result.match_review,
+        "review": result.review,
     }
     written = []
     for name, df in tables.items():

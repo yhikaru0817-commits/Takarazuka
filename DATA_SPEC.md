@@ -2,9 +2,11 @@
 
 `python -m takarazuka_data` が `output/` に出力する表の仕様です。配分システムはこの表を入力にしてください。
 すべて UTF-8 (BOM 付き) の CSV で、同じ内容が `formatted.xlsx` にもシートとして入ります。
-主キー・外部キーは `person_id` / `event_id` / `request_id` です。
+主キー・外部キーは `customer_id` / `event_id` / `request_id` です。
+`customer_id`（`C00001` 形式）は顧客マスター `data/master/customers.csv` で管理され、**一度振られたら変わりません**。
+統合された番号は `merged_into` に統合先が入り、出力には統合先の番号だけが出ます。
 
-> 個人情報を含むのは `persons` のみです。配分計算は `person_id` だけで完結させ、
+> 個人情報を含むのは `persons` のみです。配分計算は `customer_id` だけで完結させ、
 > 氏名・連絡先は連絡時にだけ `persons` から引いてください。
 
 ## 実績（過去データ）
@@ -29,16 +31,16 @@
 
 | 列 | 内容 |
 |---|---|
-| person_id, event_id, category | |
+| customer_id, event_id, category | |
 | item | `ticket`(チケット代) / `support`(サポート代＝お花代) / `entry_fee`(お茶会参加費) / `total_cost`(親睦会・年間企画・グッズ) |
 | amount | 円（整数） |
 
 ### summary — 人ごとの合計（実績）
-`person_id, large_ticket, large_support, small_ticket, small_support, tea_party, social, annual, goods, support_total, total`
+`customer_id, large_ticket, large_support, small_ticket, small_support, tea_party, social, annual, goods, support_total, total`
 （全期間の合計。期間を絞る場合は `spending` を `select_events` の結果で絞って集計してください）
 
 ### ticket_history — 過去公演の申込実績
-`person_id, event_id, category, seat_type, quantity, ticket, support`
+`customer_id, event_id, category, seat_type, quantity, ticket, support`
 （`seat_type` / `quantity` は元シートに列がある場合のみ値が入ります）
 
 ## 今回のチケット申請
@@ -49,7 +51,7 @@
 | request_id | 申請ID（`event_id#元シートの行番号`） |
 | event_id | 申請シートの event_id |
 | performance_category | `large` / `small` |
-| person_id | |
+| customer_id | |
 | quantity | 申請枚数 |
 | seat_type_requested | 申請時の席種。未確定のため large は `SS`、small は `S` が既定 |
 | support_expected | サポート代（見込額）。**申請1件あたりの金額**（1枚あたりではない） |
@@ -73,7 +75,10 @@
 - 席種確定後の実際の金額は、確定席種 × 価格で配分システム側で再計算してください。
 
 ## persons — 人物（個人情報）
-`person_id, name_kanji, name_kana, family_name, first_name, email, phone, postal_code, prefecture, address1, address2, event_count, is_new`
+`customer_id, name_kanji, name_kana, family_name, first_name, email, phone, postal_code, prefecture, address1, address2, line_id, event_count, is_new`
+
+## match_review — 同一人物か要確認の組
+`customer_id_a, name_a, kana_a, customer_id_b, name_b, kana_b, reason, decision`（decision は人が「同一」「別人」を記入）
 （`event_count` = 実績のあるイベント数、`is_new` = 実績なし）
 
 ## review — 要確認事項
