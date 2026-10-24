@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from takarazuka_data.classify import ANNUAL, GOODS, LARGE, SMALL, SOCIAL, TEA_PARTY, UNKNOWN, classify_sheet
-from takarazuka_data.classify import APPLICATION
+from takarazuka_data.classify import APPLICATION, ROSTER
 from takarazuka_data.columns import (
     clean_amount, clean_phone, clean_postal, clean_prefecture, clean_seat, map_header, parse_show)
 from takarazuka_data.pipeline import run, select_events, write_outputs
@@ -350,3 +350,43 @@ class StandardizeTest(unittest.TestCase):
             r = run(sorted(p for p in raw.glob("*.csv") if "1201" not in p.name))
         self.assertEqual(len(r.persons), 1, "整形後のシート同士で同一人物にまとまる")
         self.assertEqual(int(r.summary["total"].iloc[0]), 24000 + 5000 + 15000 + 3000)
+
+
+class RosterSplitTest(unittest.TestCase):
+    """名簿（連絡先）と金額のシートが分かれている場合。"""
+
+    def test_amount_rows_without_contacts_link_to_roster(self):
+        import contextlib, io
+        from takarazuka_data.standardize import main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig, raw = d / "original", d / "raw"
+            orig.mkdir()
+            with pd.ExcelWriter(orig / "母の管理表.xlsx") as w:
+                pd.DataFrame([["氏名", "フリガナ", "電話番号", "住所"],
+                              ["架空 花子", "カクウ ハナコ", "090-0000-0001", "大阪府架空市1-2-3"],
+                              ["試験 太郎", "シケン タロウ", "080-0000-0002", "東京都架空区4-5-6"],
+                              ["試験 太郎", "シケン タロウ", "070-0000-0003", "京都府架空市7-8-9"]]  # 同姓同名
+                             ).to_excel(w, sheet_name="会員名簿", header=False, index=False)
+                pd.DataFrame([["名前", "チケット代", "お花代"],
+                              ["架空花子", 24000, 5000],      # 空白なし → 名簿の1人に結びつく
+                              ["試験 太郎", 12000, 0],         # 同名2人 → 自動では結びつけない
+                              ["名簿 にいない", 9000, 0]]
+                             ).to_excel(w, sheet_name="渤海 宝塚大劇場 2026.1.21", header=False, index=False)
+            with contextlib.redirect_stdout(io.StringIO()):
+                todo = standardize([str(orig), "-o", str(raw), "--map", str(d / "map.csv"),
+                                    "--aliases", str(d / "none.csv")])
+            self.assertEqual(todo, 0)
+            self.assertTrue((raw / "会員_名簿.csv").exists())
+            r = run(sorted(raw.glob("*.csv")))
+
+        p = r.persons.set_index("name_kana")
+        hanako = p.loc["カクウ ハナコ"]
+        self.assertEqual(hanako["phone"], "09000000001", "名簿の連絡先が付く")
+        self.assertEqual(hanako["event_count"], 1, "名簿は参加イベントに数えない")
+        s = r.summary.set_index("customer_id")
+        self.assertEqual(s.at[hanako["customer_id"], "large_support"], 5000)
+        self.assertEqual(len(r.persons), 5, "花子1 + 太郎(名簿2 + 金額のみ1) + 名簿にいない1")
+        self.assertTrue(r.match_review["reason"].str.contains("連絡先のない方").any())
+        self.assertTrue(r.review["message"].str.contains("同じ名前の人が複数").any())
+        self.assertEqual(len(r.spending[r.spending["category"] == ROSTER]), 0)

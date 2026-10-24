@@ -7,6 +7,7 @@
     グッズ             : 公演名_グッズ
     annual             : year_date_企画名
     今回のチケット申請 : year_date_種別_公演名_申請   例) 2026_1105_大公演_星の詩_申請
+    名簿（連絡先のみ） : 名前_名簿                     例) 会員_名簿
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ SOCIAL = "social"  # 親睦会 (small に紐づく)
 ANNUAL = "annual"
 GOODS = "goods"
 APPLICATION = "application"  # 今回のチケット申請（実績ではなく見込み）
+ROSTER = "roster"  # 名簿（連絡先だけ。金額なし）
 UNKNOWN = "unknown"
 
 # 公演種別キーワード（比較は NFKC + 小文字化後）
@@ -35,6 +37,7 @@ SUFFIXES = {
     "お茶会": (TEA_PARTY, LARGE),
     "親睦会": (SOCIAL, SMALL),
     "グッズ": (GOODS, None),  # large/small どちらでも可
+    "名簿": (ROSTER, None),  # 例) 会員_名簿
 }
 
 _DATED = re.compile(r"^(\d{4})_(\d{4})_(.+)$")

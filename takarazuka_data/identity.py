@@ -167,12 +167,46 @@ def assign_customer_ids(rows: pd.DataFrame, master: pd.DataFrame, decisions: pd.
     for _, d in decisions[decisions["decision"] == SAME].iterrows():
         uf.union("M:" + d["customer_id_a"], "M:" + d["customer_id_b"])
 
-    row_root = []
+    row_root, name_only, named_nodes = [], [], {}
+    for _, m in master.iterrows():
+        if contact_values(m):
+            for n in name_values(m):
+                named_nodes.setdefault(n, []).append("M:" + m["customer_id"])
     for i, r in rows.iterrows():
         keys = identity_keys(r) or [f"R:{i}"]
         for k in keys[1:]:
             uf.union(keys[0], k)
         row_root.append(keys[0])
+        if contact_values(r):
+            for n in name_values(r):
+                named_nodes.setdefault(n, []).append(keys[0])
+        elif name_values(r):
+            name_only.append((keys[0], name_values(r)))
+
+    # 連絡先のない行（金額だけのシート等）は、同じ名前で連絡先のある人が1人だけなら自動で結びつける
+    different = {frozenset((d["customer_id_a"], d["customer_id_b"]))
+                 for _, d in decisions[decisions["decision"] == DIFFERENT].iterrows()}
+
+    def master_ids(root):
+        return {c for c in master["customer_id"] if uf.find("M:" + c) == root}
+
+    linked = ambiguous = 0
+    for key, names in name_only:
+        roots = {uf.find(x) for n in names for x in named_nodes.get(n, [])}
+        if len(roots) == 1:
+            target = roots.pop()
+            mine, theirs = master_ids(uf.find(key)), master_ids(target)
+            if any(frozenset((a, b)) in different for a in mine for b in theirs):
+                continue  # 「別人」と判定済み
+            if uf.find(key) != target:
+                uf.union(key, target)
+                linked += 1
+        elif len(roots) > 1:
+            ambiguous += 1
+    if linked:
+        issue("info", f"連絡先のない {linked} 行を、同じ名前の人（1人だけ）に結びつけました")
+    if ambiguous:
+        issue("review", f"連絡先のない {ambiguous} 行は同じ名前の人が複数いるため結びつけていません（match_review.csv）")
     row_root = [uf.find(k) for k in row_root]
 
     active = set(master.loc[master["merged_into"] == "", "customer_id"])
@@ -180,8 +214,6 @@ def assign_customer_ids(rows: pd.DataFrame, master: pd.DataFrame, decisions: pd.
     for cid in master["customer_id"]:
         by_root.setdefault(uf.find("M:" + cid), []).append(cid)
 
-    different = {frozenset((d["customer_id_a"], d["customer_id_b"]))
-                 for _, d in decisions[decisions["decision"] == DIFFERENT].iterrows()}
     master = master.copy()
     root_to_id = {}
     for root, cids in by_root.items():
@@ -236,12 +268,15 @@ def review_candidates(rows: pd.DataFrame, master: pd.DataFrame, decisions: pd.Da
     cols = ["customer_id_a", "name_a", "kana_a", "customer_id_b", "name_b", "kana_b", "reason", "decision"]
     active = master[master["merged_into"] == ""]
     names: dict[str, set] = {}
+    has_contact: set = set()
     index: dict[tuple, set] = {}
     for _, r in pd.concat([active, rows]).iterrows():
         cid = r["customer_id"]
         for n in name_values(r):
             names.setdefault(cid, set()).add(n)
             index.setdefault(("name", n), set()).add(cid)
+        if contact_values(r):
+            has_contact.add(cid)
         for t, v in contact_values(r):
             if t != "zip":  # 郵便番号だけの一致は多すぎるため対象外
                 index.setdefault(("contact", f"{t}:{v}"), set()).add(cid)
@@ -254,7 +289,9 @@ def review_candidates(rows: pd.DataFrame, master: pd.DataFrame, decisions: pd.Da
             if frozenset((a, b)) in decided:
                 continue
             if kind == "name":
-                reasons.setdefault((a, b), set()).add("名前が同じで連絡先が違う")
+                both = a in has_contact and b in has_contact
+                reasons.setdefault((a, b), set()).add(
+                    "名前が同じで連絡先が違う" if both else "名前が同じ（連絡先のない方がいて、同名の人が複数）")
             elif not names.get(a, set()) & names.get(b, set()):
                 reasons.setdefault((a, b), set()).add(f"{labels[value.split(':')[0]]}が同じで名前が違う")
 

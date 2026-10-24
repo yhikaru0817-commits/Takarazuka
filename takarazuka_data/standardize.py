@@ -18,15 +18,17 @@ from pathlib import Path
 
 import pandas as pd
 
-from .classify import ANNUAL, GOODS, LARGE, SMALL, SOCIAL, TEA_PARTY, UNKNOWN, classify_sheet, normalize_text
+from .classify import (
+    ANNUAL, GOODS, LARGE, ROSTER, SMALL, SOCIAL, TEA_PARTY, UNKNOWN, classify_sheet, normalize_text,
+)
 from .columns import (
     AMOUNT_FIELDS, EXPECTED_AMOUNTS, PERSON_FIELDS, clean_amount, is_blank, load_aliases, map_header,
 )
 from .pipeline import _is_total_row, find_header, normalize_row, read_sheets
 
-CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS, "skip"]
+CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS, ROSTER, "skip"]
 CATEGORY_LABEL = {LARGE: "大公演", SMALL: "小公演"}
-SUFFIX_LABEL = {TEA_PARTY: "お茶会", SOCIAL: "親睦会", GOODS: "グッズ"}
+SUFFIX_LABEL = {TEA_PARTY: "お茶会", SOCIAL: "親睦会", GOODS: "グッズ", ROSTER: "名簿"}
 MAP_COLUMNS = ["source_file", "source_sheet", "category", "date", "name", "target_sheet", "rows", "note"]
 
 # 指定の列名と順番
@@ -47,6 +49,7 @@ _GUESS_WORDS = [
     (LARGE, ["大公演", "大劇場", "宝塚大劇場", "東京宝塚劇場", "本公演", "large"]),
     (SMALL, ["小公演", "別箱", "小劇場", "バウ", "梅田", "ドラマシティ", "全国ツアー", "博多座", "御園座",
              "KAAT", "赤坂", "東京建物", "small"]),
+    (ROSTER, ["名簿", "住所録", "会員一覧", "会員リスト", "顧客リスト", "顧客一覧", "連絡先"]),  # 最後に判定
 ]
 _DATE_PATTERNS = [
     re.compile(r"(20\d{2})[年/.\-_ ](\d{1,2})[月/.\-_ ](\d{1,2})日?(?!\d)"),
@@ -79,6 +82,9 @@ def guess(sheet_name: str, file_name: str, fields: set) -> dict:
         elif "total_cost" in fields:
             category = ANNUAL
             notes.append("種別を確認（年間企画と推測）")
+        elif fields & {"email", "phone", "postal_code", "address1"}:
+            category = ROSTER
+            notes.append("金額の列がないため名簿と推測")
         else:
             notes.append("種別を記入してください")
     else:
@@ -110,6 +116,8 @@ def guess(sheet_name: str, file_name: str, fields: set) -> dict:
               "花組", "月組", "雪組", "星組", "宙組", "専科"):
         name = name.replace(w, " ")
     name = re.sub(r"\s+", " ", name).strip()
+    if not name and category == ROSTER:
+        name = "会員"
     if not name:
         notes.append("名前を記入してください")
     return {"category": category, "date": date, "name": name, "note": "・".join(notes)}

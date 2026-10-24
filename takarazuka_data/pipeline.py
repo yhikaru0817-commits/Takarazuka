@@ -14,7 +14,7 @@ from .identity import (
     assign_customer_ids, load_decisions, load_master, review_candidates, update_master,
 )
 from .classify import (
-    ANNUAL, APPLICATION, GOODS, LARGE, SMALL, SOCIAL, TEA_PARTY, UNKNOWN,
+    ANNUAL, APPLICATION, GOODS, LARGE, ROSTER, SMALL, SOCIAL, TEA_PARTY, UNKNOWN,
     SheetInfo, classify_sheet, name_key,
 )
 from .columns import (
@@ -24,7 +24,7 @@ from .columns import (
     split_alternatives, split_prefecture,
 )
 
-CATEGORY_PREFIX = {LARGE: "L", SMALL: "S", TEA_PARTY: "T", SOCIAL: "K", ANNUAL: "A", GOODS: "G", APPLICATION: "R"}
+CATEGORY_PREFIX = {LARGE: "L", SMALL: "S", TEA_PARTY: "T", SOCIAL: "K", ANNUAL: "A", GOODS: "G", APPLICATION: "R", ROSTER: "M"}
 ACTUAL_CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS]  # 実績（申請の見込額は含めない）
 HEADER_SCAN_ROWS = 15
 
@@ -324,7 +324,7 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
         global_issue("review", f"同一人物か確認が必要な組が {len(match_review)} 件あります"
                                "（match_review.csv の decision 列に「同一」か「別人」を書いてください）")
     applications = rows[rows["category"] == APPLICATION]
-    actual = rows[rows["category"] != APPLICATION]
+    actual = rows[~rows["category"].isin([APPLICATION, ROSTER])]  # 実績（見込み・名簿を除く）
 
     # persons: 各項目について最新イベントの値を採用
     latest_first = rows.sort_values("effective_date", ascending=False, na_position="last")
