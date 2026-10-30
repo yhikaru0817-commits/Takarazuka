@@ -446,7 +446,7 @@ def main(argv=None):
                             for c, d, n in zip(smap["category"], smap["date"], smap["name"])]
 
     # 整形
-    report, merged = [], {}
+    report, merged, orphans = [], {}, 0
     for idx, r in smap.iterrows():
         def issue(msg, r=r):
             report.append({"source_file": r["source_file"], "source_sheet": r["source_sheet"], "message": msg})
@@ -455,6 +455,9 @@ def main(argv=None):
             continue
         if (file_key(r["source_file"]), r["source_sheet"]) not in data:
             issue("元のシートが見つかりません（sheet_map.csv の行を消して構いません）")
+            if "見つかりません" not in r["note"]:
+                smap.at[idx, "note"] = "・".join(x for x in (r["note"], "元のシートが見つかりません（この行は削除してよい）") if x)
+            orphans += 1
             continue
         if cat not in CATEGORIES or not r["target_sheet"]:
             issue("sheet_map.csv の category / date / name を記入してください（取り込まない場合は category に skip）")
@@ -516,6 +519,8 @@ def main(argv=None):
             print(f"  {name}: {len(df)} 行" + (" / " + " / ".join(sums) if sums else ""))
     if added:
         print(f"新しく見つかったシート: {len(added)} 件を {map_path} に追加しました")
+    if orphans:
+        print(f"元のシートが見つからない行: {orphans} 件（シート名を変えたときなど）→ {map_path} の note 列を見て、不要な行は削除してください")
     if total_red:
         print(f"赤く塗られた行を除外しました: {total_red} 行（取り込む場合は --include-red）")
     if guessed_cols:

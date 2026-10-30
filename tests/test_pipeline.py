@@ -666,3 +666,28 @@ class RedRowAndHubTest(unittest.TestCase):
         self.assertEqual(len(r.persons), 15)
         self.assertEqual(len(r.match_review), 0, "多数に共通するメール・名前は、確認の対象にしない")
         self.assertTrue(r.review["message"].str.contains("人以上に共通する値").any())
+
+
+class OrphanRowTest(unittest.TestCase):
+    def test_renamed_sheet_leaves_flagged_orphan_row(self):
+        import contextlib, io
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            df = pd.DataFrame({"お名前": ["架空 花子", "試験 太郎", "新規 由美"], "合計金額": [1000, 2000, 3000],
+                               "フリガナ": ["カクウ ハナコ", "シケン タロウ", "シンキ ユミ"]})
+            with pd.ExcelWriter(orig / "管理.xlsx") as w:
+                df.to_excel(w, sheet_name="331誕生日企画", index=False)
+            args = [str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            with pd.ExcelWriter(orig / "管理.xlsx") as w:  # シート名を変更
+                df.to_excel(w, sheet_name="20260331_誕生日企画", index=False)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                standardize(args)
+            m = load_map(d / "map.csv").set_index("source_sheet")
+            self.assertIn("見つかりません", m.at["331誕生日企画", "note"])
+            self.assertIn("20260331_誕生日企画", m.index)
+            self.assertIn("元のシートが見つからない行: 1 件", buf.getvalue())
