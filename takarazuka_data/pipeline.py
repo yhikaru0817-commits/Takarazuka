@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .identity import HUB_MIN as identity_hub_min
 from .identity import (
     assign_customer_ids, load_decisions, load_master, review_candidates, update_master,
 )
@@ -320,6 +321,10 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
     rows["customer_id"], master = assign_customer_ids(rows, master, decisions, global_issue)
     master = update_master(master, rows)
     match_review = review_candidates(rows, master, decisions)
+    hubs = match_review.attrs.get("hubs", {})
+    if hubs.get("name") or hubs.get("contact"):
+        global_issue("info", f"{identity_hub_min}人以上に共通する値を、確認の対象から外しました"
+                             f"（名前 {hubs.get('name', 0)} 個・連絡先 {hubs.get('contact', 0)} 個）")
     if len(match_review):
         global_issue("review", f"同一人物か確認が必要な組が {len(match_review)} 件あります"
                                "（match_review.csv の decision 列に「同一」か「別人」を書いてください）")

@@ -617,3 +617,52 @@ class RedownloadedFileTest(unittest.TestCase):
             self.assertEqual(len(m), 1, "同じシートとして扱い、行を増やさない")
             self.assertEqual(m.loc[0, "target_sheet"], "2026_0331_誕生日企画")
             self.assertTrue((d / "raw" / "2026_0331_誕生日企画.csv").exists())
+
+
+class RedRowAndHubTest(unittest.TestCase):
+    def test_red_rows_are_excluded_and_totals_are_recorded(self):
+        import contextlib, io
+        from openpyxl import Workbook
+        from openpyxl.styles import PatternFill
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            wb = Workbook(); ws = wb.active; ws.title = "606呂布東京チケット"
+            ws.append(["お名前", "フリガナ", "サポート"])
+            for i in range(6):
+                ws.append([f"架空 花{chr(0x5B50 + i)}", f"カクウ ハナ{chr(0x30A2 + 2 * i)}", 1000 * (i + 1)])
+            red = PatternFill("solid", start_color="FFFF0000", end_color="FFFF0000")
+            for c in range(1, 9):  # 4行目（データの3人目）を行全体で赤く塗る
+                ws.cell(row=4, column=c).fill = red
+            ws.cell(row=6, column=1).fill = red  # 1セルだけ赤い行は除外しない
+            wb.save(orig / "管理.xlsx")
+            args = [str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            m = load_map(d / "map.csv")
+            m.loc[0, ["category", "date", "name"]] = ["large", "20260606", "呂布東京"]
+            m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            out = pd.read_csv(d / "raw" / "2026_0606_大公演_呂布東京.csv", dtype=str)
+            self.assertEqual(len(out), 5)
+            self.assertNotIn("3000", out["Support"].tolist())
+            self.assertEqual(load_map(d / "map.csv").loc[0, "totals"], "Ticket 0円 / Support 18,000円 / 赤い行を除外 1行")
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args + ["--include-red"])
+            self.assertEqual(len(pd.read_csv(d / "raw" / "2026_0606_大公演_呂布東京.csv")), 6)
+
+    def test_values_shared_by_many_people_are_not_reviewed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            rows = [person(f"架空 花{chr(0x5B50 + i)}", f"カクウ ハナ{chr(0x30A2 + 2 * i)}", "shared@example.com",
+                           f"090-0000-{i:04d}", f"10{i}-0001", addr=f"架空市{i}-2-3") + [1000, 0] for i in range(8)]
+            rows += [person("なし", "ナシ", f"x{i}@example.com", f"080-1111-{i:04d}", f"20{i}-0002",
+                            addr=f"試験市{i}-4-5") + [1000, 0] for i in range(7)]
+            p = d / "2026_0121_大公演_渤海.csv"
+            pd.DataFrame(rows, columns=STD + ["Ticket", "Support"]).to_csv(p, index=False)
+            r = run([p])
+        self.assertEqual(len(r.persons), 15)
+        self.assertEqual(len(r.match_review), 0, "多数に共通するメール・名前は、確認の対象にしない")
+        self.assertTrue(r.review["message"].str.contains("人以上に共通する値").any())

@@ -265,6 +265,9 @@ def update_master(master: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
 
 # ---------- 要確認の組み合わせ ----------
 
+HUB_MIN = 6  # 同じ名前・同じ連絡先がこの人数以上の顧客に使われていたら、本人を特定する値とはみなさない
+
+
 def review_candidates(rows: pd.DataFrame, master: pd.DataFrame, decisions: pd.DataFrame) -> pd.DataFrame:
     """自動では結びつけなかったが、同一人物かもしれない顧客の組を出す。"""
     cols = ["customer_id_a", "name_a", "kana_a", "customer_id_b", "name_b", "kana_b", "reason", "decision"]
@@ -286,7 +289,11 @@ def review_candidates(rows: pd.DataFrame, master: pd.DataFrame, decisions: pd.Da
     decided = {frozenset((d["customer_id_a"], d["customer_id_b"])) for _, d in decisions.iterrows()}
     reasons: dict[tuple, set] = {}
     labels = {"mail": "メール", "tel": "電話", "addr": "住所", "line": "LINE"}
+    hubs = {"name": 0, "contact": 0}
     for (kind, value), cids in index.items():
+        if len(cids) >= HUB_MIN:  # 「なし」「不明」や代表のメールなど、多数の人に共通する値は確認の対象にしない
+            hubs[kind] += 1
+            continue
         for a, b in combinations(sorted(cids), 2):
             if frozenset((a, b)) in decided:
                 continue
@@ -301,4 +308,6 @@ def review_candidates(rows: pd.DataFrame, master: pd.DataFrame, decisions: pd.Da
     out = [{"customer_id_a": a, "name_a": info.at[a, "name_kanji"], "kana_a": info.at[a, "name_kana"],
             "customer_id_b": b, "name_b": info.at[b, "name_kanji"], "kana_b": info.at[b, "name_kana"],
             "reason": "・".join(sorted(rs)), "decision": ""} for (a, b), rs in sorted(reasons.items())]
-    return pd.DataFrame(out, columns=cols)
+    df = pd.DataFrame(out, columns=cols)
+    df.attrs["hubs"] = hubs
+    return df

@@ -72,6 +72,9 @@ def main(argv=None):
     levels = Counter(i["level"] for i in result.issues)
     if levels:
         print("要確認: " + ", ".join(f"{k}={v}" for k, v in levels.items()) + " → review.csv を確認してください")
+    errors = [i for i in result.issues if i["level"] == "error"]
+    for i in errors[:20]:  # エラーの内容（個人情報は含まない）
+        print(f"  ✗ {i['sheet']}: {i['message']}")
     for p in written:
         print(f"出力: {p}")
 

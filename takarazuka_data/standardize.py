@@ -50,7 +50,7 @@ def normalize_date(v) -> str:
     return re.sub(r"\D", "", s)
 CATEGORY_LABEL = {LARGE: "大公演", SMALL: "小公演"}
 SUFFIX_LABEL = {TEA_PARTY: "お茶会", SOCIAL: "親睦会", GOODS: "グッズ", ROSTER: "名簿"}
-MAP_COLUMNS = ["source_file", "source_sheet", "category", "date", "name", "columns", "target_sheet", "rows", "note"]
+MAP_COLUMNS = ["source_file", "source_sheet", "category", "date", "name", "columns", "target_sheet", "rows", "totals", "note"]
 
 # 指定の列名と順番
 OUTPUT_HEADERS = {
@@ -259,6 +259,41 @@ def guess_columns(df: pd.DataFrame, category: str) -> str:
     return " ".join(f"{col_letter(i)}={l}" for i, l in enumerate(labels))
 
 
+# ---------- 赤く塗られた行（キャンセルなど）の除外 ----------
+RED_MIN_CELLS = 5  # 1行のうち、赤く塗られたセルがこの数以上なら「赤い行」
+
+
+def _is_red(rgb) -> bool:
+    h = str(rgb)[-6:]
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return False
+    return r >= 0xD0 and g <= 0x60 and b <= 0x60
+
+
+def load_red_rows(path: Path) -> dict:
+    """{シート名: 赤い行の集合（0始まり。pandas の行番号と一致）}。xlsx のみ。"""
+    if path.suffix.lower() not in (".xlsx", ".xlsm"):
+        return {}
+    from openpyxl import load_workbook
+    out = {}
+    wb = load_workbook(path)
+    for ws in wb.worksheets:
+        rows = set()
+        for i, row in enumerate(ws.iter_rows()):
+            red = 0
+            for c in row:
+                f = c.fill
+                if f is not None and f.fill_type == "solid" and f.fgColor is not None \
+                        and f.fgColor.type == "rgb" and _is_red(f.fgColor.rgb):
+                    red += 1
+            if red >= RED_MIN_CELLS:
+                rows.add(i)
+        out[ws.title] = rows
+    return out
+
+
 def file_key(name) -> str:
     """ファイル名の照合用キー。ダウンロードし直して「 (1)」が付いたり消えたりしても、同じファイルとみなす。"""
     stem = unicodedata.normalize("NFKC", Path(str(name)).stem)
@@ -276,7 +311,8 @@ def load_map(path: Path) -> pd.DataFrame:
     raise ValueError(f"文字コードを判定できません: {path.name}")
 
 
-def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "") -> tuple[pd.DataFrame | None, list[str]]:
+def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "", skip_rows=frozenset(),
+                      stats=None) -> tuple[pd.DataFrame | None, list[str]]:
     """1シートを標準の列に揃える。spec（列の指定）があればそれを優先。戻り値: (整形後の表, 未対応の列名)"""
     if spec.strip():
         by_index = parse_columns(spec, len(df.columns), issue)
@@ -329,6 +365,10 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "") ->
         raw = {f: df.iat[i, df.columns.get_loc(c)] for c, f in mapping.items()}
         if all(is_blank(raw.get(f)) for f in PERSON_FIELDS) or _is_total_row(raw):
             continue
+        if i in skip_rows and not (is_blank(raw.get("name_kanji")) and is_blank(raw.get("name_kana"))):
+            if stats is not None:
+                stats["red"] = stats.get("red", 0) + 1
+            continue  # 赤く塗られた行は除外
         rec = normalize_row(raw, lambda level, msg, r=i + 1: issue(f"{r}行目: {msg}"))
         if not rec["name_kanji"] and not rec["name_kana"]:
             issue(f"{i + 1}行目: 氏名がないため除外しました")
@@ -354,6 +394,7 @@ def main(argv=None):
     ap.add_argument("-o", "--output", default="data/raw", help="整形後のCSVの出力先")
     ap.add_argument("--map", default="data/sheet_map.csv", help="シートの対応表")
     ap.add_argument("--aliases", default="config/column_aliases.csv", help="独自の列名の対応")
+    ap.add_argument("--include-red", action="store_true", help="赤く塗られた行も取り込む（既定は除外）")
     args = ap.parse_args(argv)
 
     src, dst, map_path = Path(args.input), Path(args.output), Path(args.map)
@@ -381,7 +422,8 @@ def main(argv=None):
     smap["category"] = smap["category"].map(normalize_category)
     smap["date"] = smap["date"].map(lambda d: normalize_date(d) if str(d).strip() else "")
     # 列名の行がないシートには、列の推測を columns 列に書く（空欄のときだけ。人の修正は上書きしない）
-    data, newest = {}, {}
+    data, newest, file_of = {}, {}, {}
+    red_cache, total_red = {}, 0
     for s_name, s_df, f_name in sheets:  # 同じシートが新旧2つのファイルにあれば、新しい方（更新日時）を使う
         key = (file_key(f_name), str(s_name))
         mtime = (src / f_name).stat().st_mtime if (src / f_name).exists() else 0
@@ -389,6 +431,7 @@ def main(argv=None):
             print(f"注意: 同じシート「{s_name}」が複数のファイルにあります。新しい方を使います（古いファイルは data/original から外してください）")
         if key not in data or mtime >= newest[key]:
             data[key], newest[key] = s_df, mtime
+            file_of[key] = f_name
     guessed_cols = 0
     for idx, r in smap.iterrows():
         df = data.get((file_key(r["source_file"]), r["source_sheet"]))
@@ -416,12 +459,30 @@ def main(argv=None):
         if cat not in CATEGORIES or not r["target_sheet"]:
             issue("sheet_map.csv の category / date / name を記入してください（取り込まない場合は category に skip）")
             continue
-        out, unmapped = standardize_sheet(data[(file_key(r["source_file"]), r["source_sheet"])], cat, issue, r["columns"])
+        key = (file_key(r["source_file"]), r["source_sheet"])
+        skip_rows = frozenset()
+        if not args.include_red:
+            path = src / file_of[key]
+            if path not in red_cache:
+                try:
+                    red_cache[path] = load_red_rows(path)
+                except Exception:  # 色が読めなくても整形は続ける
+                    red_cache[path] = {}
+                    issue("セルの色を読めなかったため、赤い行の除外はできませんでした")
+            skip_rows = frozenset(red_cache[path].get(r["source_sheet"], ()))
+        stats = {}
+        out, unmapped = standardize_sheet(data[key], cat, issue, r["columns"], skip_rows, stats)
         if unmapped:
             issue("使わなかった列: " + ", ".join(unmapped) + "（必要なら column_aliases.csv に追加）")
         if out is None:
             continue
         smap.at[idx, "rows"] = str(len(out))
+        tot = [f"{col} {int(pd.to_numeric(out[col], errors='coerce').fillna(0).sum()):,}円"
+               for col in ("Ticket", "Support", "Entry_fee", "total_cost") if col in out.columns]
+        if stats.get("red"):
+            tot.append(f"赤い行を除外 {stats['red']}行")
+            total_red += stats["red"]
+        smap.at[idx, "totals"] = " / ".join(tot)
         merged.setdefault(r["target_sheet"], []).append(out)
 
     dst.mkdir(parents=True, exist_ok=True)
@@ -455,6 +516,8 @@ def main(argv=None):
             print(f"  {name}: {len(df)} 行" + (" / " + " / ".join(sums) if sums else ""))
     if added:
         print(f"新しく見つかったシート: {len(added)} 件を {map_path} に追加しました")
+    if total_red:
+        print(f"赤く塗られた行を除外しました: {total_red} 行（取り込む場合は --include-red）")
     if guessed_cols:
         print(f"列名の行がないシート: {guessed_cols} 件 → {map_path} の columns 列に列の推測を書きました。確認してください")
     if len(guessed):
