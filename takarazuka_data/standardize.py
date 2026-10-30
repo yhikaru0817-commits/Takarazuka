@@ -28,6 +28,26 @@ from .columns import (
 from .pipeline import _is_total_row, find_header, normalize_row, read_sheets
 
 CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS, ROSTER, "skip"]
+CATEGORY_ALIASES = {
+    "大公演": LARGE, "大劇場": LARGE, "小公演": SMALL, "別箱": SMALL, "お茶会": TEA_PARTY, "親睦会": SOCIAL,
+    "グッズ": GOODS, "年間企画": ANNUAL, "企画": ANNUAL, "名簿": ROSTER,
+    "取り込まない": "skip", "除外": "skip", "スキップ": "skip", "対象外": "skip",
+}
+
+
+def normalize_category(v) -> str:
+    """'Small' や ' large ' や日本語（大公演・お茶会など）でも受け付ける。"""
+    s = re.sub(r"[\s\-]+", "_", unicodedata.normalize("NFKC", str(v)).strip()).lower()
+    return CATEGORY_ALIASES.get(s, s)
+
+
+def normalize_date(v) -> str:
+    """20260121 / 2026/1/21 / 2026-01-21 / 20,260,121 のどれでも 20260121 にする。"""
+    s = unicodedata.normalize("NFKC", str(v)).strip()
+    m = re.search(r"(\d{4})\D+(\d{1,2})\D+(\d{1,2})", s)
+    if m:
+        return f"{int(m.group(1)):04d}{int(m.group(2)):02d}{int(m.group(3)):02d}"
+    return re.sub(r"\D", "", s)
 CATEGORY_LABEL = {LARGE: "大公演", SMALL: "小公演"}
 SUFFIX_LABEL = {TEA_PARTY: "お茶会", SOCIAL: "親睦会", GOODS: "グッズ", ROSTER: "名簿"}
 MAP_COLUMNS = ["source_file", "source_sheet", "category", "date", "name", "columns", "target_sheet", "rows", "note"]
@@ -267,6 +287,23 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "") ->
         unmapped = [str(h) for c, h in df.iloc[header_row].items() if c not in mapping and not is_blank(h)]
     amounts = EXPECTED_AMOUNTS[category]
     found = set(mapping.values())
+    if header_row != -1 and len(amounts) == 1 and not (found & set(AMOUNT_FIELDS)):
+        # 金額の列名が「517グッズ」のように独自の名前のとき: 数字だけの列が1つだけなら金額とみなす
+        body = df.iloc[header_row + 1:]
+        cand = []
+        for c in df.columns:
+            if c in mapping:
+                continue
+            vals = [v for v in body[c].tolist() if not is_blank(v)]
+            nums = [v for v in vals if isinstance(v, (int, float)) and not isinstance(v, bool)]
+            if len(vals) >= 3 and len(nums) / len(vals) >= 0.7:
+                cand.append(c)
+        if len(cand) == 1:
+            head = df.iat[header_row, df.columns.get_loc(cand[0])]
+            mapping = {**mapping, cand[0]: amounts[0]}
+            found = set(mapping.values())
+            unmapped = [u for u in unmapped if u != str(head)]
+            issue(f"列「{head}」を {OUTPUT_HEADERS[amounts[0]]} として扱いました（違う場合は columns で指定）")
     for f in amounts:
         if f not in found:
             # 金額列が別名なら、他の金額列で代用（例: お茶会シートに「合計」しかない）
@@ -335,6 +372,8 @@ def main(argv=None):
         added.append({"source_file": file_name, "source_sheet": str(sheet_name), **g})
     if added:
         smap = pd.concat([smap, pd.DataFrame(added)], ignore_index=True).reindex(columns=MAP_COLUMNS).fillna("")
+    smap["category"] = smap["category"].map(normalize_category)
+    smap["date"] = smap["date"].map(lambda d: normalize_date(d) if str(d).strip() else "")
     # 列名の行がないシートには、列の推測を columns 列に書く（空欄のときだけ。人の修正は上書きしない）
     data = {(f, str(s)): df for s, df, f in sheets}
     guessed_cols = 0
@@ -342,7 +381,8 @@ def main(argv=None):
         df = data.get((r["source_file"], r["source_sheet"]))
         if df is None or r["columns"].strip() or r["category"].strip() == "skip":
             continue
-        if find_header(df)[0] is None:
+        hr, mp = find_header(df)
+        if hr is None or not ({"name_kanji", "name_kana", "family_name"} & set(mp.values())):
             smap.at[idx, "columns"] = guess_columns(df, r["category"].strip())
             smap.at[idx, "note"] = "・".join(x for x in (r["note"], "列の指定（columns）を確認") if x)
             guessed_cols += 1

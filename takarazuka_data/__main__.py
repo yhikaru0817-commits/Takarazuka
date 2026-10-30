@@ -65,6 +65,8 @@ def main(argv=None):
     if len(result.match_review):
         print(f"★ 同一人物か確認が必要な組: {len(result.match_review)} 件 → {out_dir / 'match_review.csv'} の"
               " decision 列に「同一」か「別人」を書いて保存し、もう一度実行してください")
+        for reason, n in result.match_review["reason"].value_counts().items():
+            print(f"    内訳: {reason}: {n} 件")
     for cat, n in result.events["category"].value_counts().items():
         print(f"  {cat}: {n}")
     levels = Counter(i["level"] for i in result.issues)

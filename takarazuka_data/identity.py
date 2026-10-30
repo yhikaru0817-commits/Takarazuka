@@ -48,6 +48,8 @@ def address_key(prefecture: str, address1: str) -> str:
 
 def contact_values(r) -> list[tuple[str, str]]:
     addr = address_key(r.get("prefecture", ""), r.get("address1", "")) if r.get("address1") else ""
+    if not re.search(r"\d", addr) or len(addr) < 6:  # 番地まで書かれていない住所は照合に使わない
+        addr = ""
     pairs = [("mail", r.get("email", "")), ("tel", r.get("phone", "")), ("zip", r.get("postal_code", "")),
              ("addr", addr), ("line", r.get("line_id", ""))]
     return [(t, v) for t, v in pairs if v]

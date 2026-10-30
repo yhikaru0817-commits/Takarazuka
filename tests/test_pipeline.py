@@ -494,3 +494,62 @@ class HeaderlessSheetTest(unittest.TestCase):
             out = pd.read_csv(d / "raw" / "2026_0121_大公演_渤海.csv", dtype=str).fillna("")
             self.assertEqual((out.iloc[0]["Ticket"], out.iloc[0]["Support"]), ("1000", "10500"))
             self.assertEqual(out.iloc[0]["post-number"], "", "指定しなかった列は取り込まない")
+
+
+class SheetMapRobustnessTest(unittest.TestCase):
+    """実データで見つかった sheet_map・列名まわりの不具合の再発防止（すべて架空の値）。"""
+
+    def run_std(self, d, orig, extra=None):
+        import contextlib, io
+        from takarazuka_data.standardize import main as standardize
+        with contextlib.redirect_stdout(io.StringIO()):
+            standardize([str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")])
+
+    def test_category_and_date_variants(self):
+        from takarazuka_data.standardize import normalize_category, normalize_date
+        for v, want in (("Small", "small"), (" LARGE ", "large"), ("大公演", "large"), ("お茶会", "tea_party"),
+                        ("Tea Party", "tea_party"), ("取り込まない", "skip"), ("グッズ", "goods")):
+            self.assertEqual(normalize_category(v), want)
+        for v in ("20260121", "2026/1/21", "2026-01-21 00:00:00", "20,260,121", "２０２６年１月２１日"):
+            self.assertEqual(normalize_date(v), "20260121", v)
+
+    def test_unnamed_amount_column_header_without_name_column_and_aliases(self):
+        from takarazuka_data.standardize import load_map
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            names = [f"架空 花{chr(0x5B50 + i)}" for i in range(8)]
+            kanas = [f"カクウ ハナ{chr(0x30A2 + 2 * i)}" for i in range(8)]
+            with pd.ExcelWriter(orig / "管理.xlsx") as w:
+                # 金額の列名が商品名（517グッズ）、ご協力金額（企画）
+                pd.DataFrame({"お名前": names, "517グッズ": [1500 * (i % 3 + 1) for i in range(8)],
+                              "フリガナ": kanas, "電話番号": [f"090-0000-{i:04d}" for i in range(8)]}
+                             ).to_excel(w, sheet_name="グッズA", index=False)
+                pd.DataFrame({"お名前": names, "ご協力金額": [1000 * (i % 3 + 1) for i in range(8)],
+                              "フリガナ": kanas}).to_excel(w, sheet_name="企画B", index=False)
+                # 列名の行はあるが、名前の列に列名がない
+                pd.DataFrame([[None, None, "代金", "日付"]] + [
+                    [names[i], kanas[i], 5500 + 1000 * i, 46028] for i in range(8)]
+                ).to_excel(w, sheet_name="チケットC", header=False, index=False)
+            self.run_std(d, orig)
+            m = load_map(d / "map.csv").set_index("source_sheet")
+            m.loc["グッズA", ["category", "date", "name"]] = ["Goods", "", "渤海"]       # 大文字・日本語でも可
+            m.loc["企画B", ["category", "date", "name"]] = ["年間企画", "2026/3/31", "誕生日"]
+            m.loc["チケットC", ["category", "date", "name"]] = ["Small", "2026.1.21", "渤海"]
+            m.reset_index().to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            self.run_std(d, orig)
+            m = load_map(d / "map.csv").set_index("source_sheet")
+            self.assertEqual(m.at["グッズA", "target_sheet"], "渤海_グッズ")
+            self.assertEqual(m.at["企画B", "target_sheet"], "2026_0331_誕生日")
+            self.assertEqual(m.at["チケットC", "target_sheet"], "2026_0121_小公演_渤海")
+            self.assertTrue(m.at["チケットC", "columns"], "名前の列がないシートも列を推測する")
+            g = pd.read_csv(d / "raw" / "渤海_グッズ.csv", dtype=str)
+            self.assertEqual(g["total_cost"].tolist()[:3], ["1500", "3000", "4500"])
+            k = pd.read_csv(d / "raw" / "2026_0331_誕生日.csv", dtype=str)
+            self.assertEqual(k["total_cost"].tolist()[:3], ["1000", "2000", "3000"])
+
+    def test_city_only_addresses_do_not_match_people(self):
+        from takarazuka_data.identity import contact_values
+        base = {"prefecture": "兵庫県", "email": "", "phone": "", "postal_code": ""}
+        self.assertEqual(contact_values({**base, "address1": "宝塚市"}), [])
+        self.assertEqual([t for t, _ in contact_values({**base, "address1": "宝塚市旭町2-3-15"})], ["addr"])
