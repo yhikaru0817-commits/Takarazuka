@@ -259,6 +259,12 @@ def guess_columns(df: pd.DataFrame, category: str) -> str:
     return " ".join(f"{col_letter(i)}={l}" for i, l in enumerate(labels))
 
 
+def file_key(name) -> str:
+    """ファイル名の照合用キー。ダウンロードし直して「 (1)」が付いたり消えたりしても、同じファイルとみなす。"""
+    stem = unicodedata.normalize("NFKC", Path(str(name)).stem)
+    return re.sub(r"\s*\(\d+\)\s*$", "", stem).strip().lower()
+
+
 def load_map(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(columns=MAP_COLUMNS)
@@ -362,10 +368,10 @@ def main(argv=None):
 
     sheets = list(read_sheets(paths))
     smap = load_map(map_path)
-    known = {(r["source_file"], r["source_sheet"]) for _, r in smap.iterrows()}
+    known = {(file_key(r["source_file"]), r["source_sheet"]) for _, r in smap.iterrows()}
     added = []
     for sheet_name, df, file_name in sheets:
-        if (file_name, str(sheet_name)) in known:
+        if (file_key(file_name), str(sheet_name)) in known:
             continue
         _, mapping = find_header(df)
         g = guess(str(sheet_name), file_name, set(mapping.values()))
@@ -375,10 +381,17 @@ def main(argv=None):
     smap["category"] = smap["category"].map(normalize_category)
     smap["date"] = smap["date"].map(lambda d: normalize_date(d) if str(d).strip() else "")
     # 列名の行がないシートには、列の推測を columns 列に書く（空欄のときだけ。人の修正は上書きしない）
-    data = {(f, str(s)): df for s, df, f in sheets}
+    data, newest = {}, {}
+    for s_name, s_df, f_name in sheets:  # 同じシートが新旧2つのファイルにあれば、新しい方（更新日時）を使う
+        key = (file_key(f_name), str(s_name))
+        mtime = (src / f_name).stat().st_mtime if (src / f_name).exists() else 0
+        if key in data:
+            print(f"注意: 同じシート「{s_name}」が複数のファイルにあります。新しい方を使います（古いファイルは data/original から外してください）")
+        if key not in data or mtime >= newest[key]:
+            data[key], newest[key] = s_df, mtime
     guessed_cols = 0
     for idx, r in smap.iterrows():
-        df = data.get((r["source_file"], r["source_sheet"]))
+        df = data.get((file_key(r["source_file"]), r["source_sheet"]))
         if df is None or r["columns"].strip() or r["category"].strip() == "skip":
             continue
         hr, mp = find_header(df)
@@ -397,13 +410,13 @@ def main(argv=None):
         cat = r["category"].strip()
         if cat == "skip":
             continue
-        if (r["source_file"], r["source_sheet"]) not in data:
+        if (file_key(r["source_file"]), r["source_sheet"]) not in data:
             issue("元のシートが見つかりません（sheet_map.csv の行を消して構いません）")
             continue
         if cat not in CATEGORIES or not r["target_sheet"]:
             issue("sheet_map.csv の category / date / name を記入してください（取り込まない場合は category に skip）")
             continue
-        out, unmapped = standardize_sheet(data[(r["source_file"], r["source_sheet"])], cat, issue, r["columns"])
+        out, unmapped = standardize_sheet(data[(file_key(r["source_file"]), r["source_sheet"])], cat, issue, r["columns"])
         if unmapped:
             issue("使わなかった列: " + ", ".join(unmapped) + "（必要なら column_aliases.csv に追加）")
         if out is None:

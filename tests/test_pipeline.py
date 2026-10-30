@@ -588,3 +588,32 @@ class WideSheetSpecTest(unittest.TestCase):
             self.assertEqual(out.iloc[0]["name katakana"], "カクウ ハナア")
             self.assertEqual((out.iloc[0]["Support"], out.iloc[0]["枚数"]), ("1000", "2"))
             self.assertIn("Support 10,000円", buf.getvalue())
+
+
+class RedownloadedFileTest(unittest.TestCase):
+    """ダウンロードし直してファイル名が変わっても、sheet_map（人の修正）を引き継ぐ。"""
+
+    def test_file_rename_keeps_map(self):
+        import contextlib, io, os
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            df = pd.DataFrame({"お名前": ["架空 花子", "試験 太郎", "新規 由美"], "合計金額": [1000, 2000, 3000],
+                               "フリガナ": ["カクウ ハナコ", "シケン タロウ", "シンキ ユミ"]})
+            with pd.ExcelWriter(orig / "2026成績仮 (1).xlsx") as w:
+                df.to_excel(w, sheet_name="331誕生日企画", index=False)
+            args = [str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            m = load_map(d / "map.csv")
+            m.loc[0, ["category", "date", "name"]] = ["annual", "20260331", "誕生日企画"]
+            m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            # 新しいファイルをダウンロード（名前が違う）して、古い方を外す
+            os.rename(orig / "2026成績仮 (1).xlsx", orig / "2026成績仮.xlsx")
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            m = load_map(d / "map.csv")
+            self.assertEqual(len(m), 1, "同じシートとして扱い、行を増やさない")
+            self.assertEqual(m.loc[0, "target_sheet"], "2026_0331_誕生日企画")
+            self.assertTrue((d / "raw" / "2026_0331_誕生日企画.csv").exists())
