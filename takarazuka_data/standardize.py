@@ -433,6 +433,13 @@ def main(argv=None):
     todo = smap[(smap["category"] != "skip") & (smap["target_sheet"] == "")]
     guessed = smap[smap["note"].str.contains("推測|確認", na=False) & (smap["target_sheet"] != "")]
     print(f"元のシート: {len(sheets)} / 整形できたシート: {len(merged)}（{dst}/）")
+    if merged:  # 列の指定が合っているか、元のシートの合計と見比べるための表示（金額の合計だけで、個人情報は出さない）
+        print("シートごとの行数と金額の合計（元のシートの合計と見比べてください）:")
+        for name, parts in sorted(merged.items()):
+            df = pd.concat(parts, ignore_index=True)
+            sums = [f"{col} {int(pd.to_numeric(df[col], errors='coerce').fillna(0).sum()):,}円"
+                    for col in ("Ticket", "Support", "Entry_fee", "total_cost") if col in df.columns]
+            print(f"  {name}: {len(df)} 行" + (" / " + " / ".join(sums) if sums else ""))
     if added:
         print(f"新しく見つかったシート: {len(added)} 件を {map_path} に追加しました")
     if guessed_cols:

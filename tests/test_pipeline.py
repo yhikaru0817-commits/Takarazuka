@@ -553,3 +553,38 @@ class SheetMapRobustnessTest(unittest.TestCase):
         base = {"prefecture": "兵庫県", "email": "", "phone": "", "postal_code": ""}
         self.assertEqual(contact_values({**base, "address1": "宝塚市"}), [])
         self.assertEqual([t for t, _ in contact_values({**base, "address1": "宝塚市旭町2-3-15"})], ["addr"])
+
+
+class WideSheetSpecTest(unittest.TestCase):
+    """横に長いシート: 2文字の列記号（AB など）の指定と、金額合計の表示。"""
+
+    def test_two_letter_columns_and_totals(self):
+        import contextlib, io
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            rows = []
+            for i in range(10):
+                r = [None] * 35
+                r[0] = f"架空 花{chr(0x5B50 + i)}"; r[1] = 2; r[2] = 1000; r[3] = 500   # A 名前 B 枚数 C サポート D 1枚あたり
+                r[27] = f"カクウ ハナ{chr(0x30A2 + 2 * i)}"                              # AB カナ
+                r[22] = 2; r[33] = 1000; r[34] = 500                                      # 別ブロックの同じ内容
+                rows.append(r)
+            with pd.ExcelWriter(orig / "管理.xlsx") as w:
+                pd.DataFrame(rows).to_excel(w, sheet_name="606呂布東京チケット", header=False, index=False)
+            buf = io.StringIO()
+            args = [str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+            with contextlib.redirect_stdout(buf):
+                standardize(args)
+            m = load_map(d / "map.csv")
+            m.loc[0, ["category", "date", "name", "columns"]] = ["large", "20260606", "呂布東京", "A=名前 AB=カナ B=枚数 C=サポート"]
+            m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                standardize(args)
+            out = pd.read_csv(d / "raw" / "2026_0606_大公演_呂布東京.csv", dtype=str)
+            self.assertEqual(len(out), 10)
+            self.assertEqual(out.iloc[0]["name katakana"], "カクウ ハナア")
+            self.assertEqual((out.iloc[0]["Support"], out.iloc[0]["枚数"]), ("1000", "2"))
+            self.assertIn("Support 10,000円", buf.getvalue())
