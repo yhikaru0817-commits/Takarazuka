@@ -22,14 +22,15 @@ from .classify import (
     ANNUAL, GOODS, LARGE, ROSTER, SMALL, SOCIAL, TEA_PARTY, UNKNOWN, classify_sheet, normalize_text,
 )
 from .columns import (
-    AMOUNT_FIELDS, EXPECTED_AMOUNTS, PERSON_FIELDS, clean_amount, is_blank, load_aliases, map_header,
+    AMOUNT_FIELDS, EXPECTED_AMOUNTS, PERSON_FIELDS, PREFECTURES, clean_amount, clean_prefecture, is_blank,
+    load_aliases, map_header,
 )
 from .pipeline import _is_total_row, find_header, normalize_row, read_sheets
 
 CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS, ROSTER, "skip"]
 CATEGORY_LABEL = {LARGE: "大公演", SMALL: "小公演"}
 SUFFIX_LABEL = {TEA_PARTY: "お茶会", SOCIAL: "親睦会", GOODS: "グッズ", ROSTER: "名簿"}
-MAP_COLUMNS = ["source_file", "source_sheet", "category", "date", "name", "target_sheet", "rows", "note"]
+MAP_COLUMNS = ["source_file", "source_sheet", "category", "date", "name", "columns", "target_sheet", "rows", "note"]
 
 # 指定の列名と順番
 OUTPUT_HEADERS = {
@@ -135,6 +136,109 @@ def target_sheet(category: str, date: str, name: str) -> str:
     return ""
 
 
+# ---------- 列名の行がないシート: 列の指定 ----------
+# sheet_map.csv の columns 列に「A=番号 B=- C=名前 D=カナ ...」のように書く（A,B,C は Excel の列）。
+# 「-」や番号・日付・人数・備考などは取り込まない。
+IGNORE_LABELS = {"", "-", "ー", "番号", "日付", "日時", "人数", "備考", "メモ", "不明", "?", "？"}
+_SPEC_TOKEN = re.compile(r"([A-Za-z]{1,2})\s*[=:：＝]\s*([^\s,、]*)")
+
+
+def col_letter(i: int) -> str:
+    s = ""
+    i += 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def col_index(letter: str) -> int:
+    n = 0
+    for ch in letter.upper():
+        n = n * 26 + ord(ch) - 64
+    return n - 1
+
+
+def parse_columns(spec: str, ncols: int, issue) -> dict:
+    """'A=- B=名前 C=カナ' → {列番号: 項目}"""
+    mapping = {}
+    for letter, label in _SPEC_TOKEN.findall(unicodedata.normalize("NFKC", spec)):
+        i = col_index(letter)
+        label = label.strip()
+        if label in IGNORE_LABELS:
+            continue
+        field = map_header(label, contains=False) or {"住所": "address1", "建物": "address2", "金額": None}.get(label)
+        if not field:
+            issue(f"列の指定「{letter}={label}」が分かりません（名前・カナ・電話・メール・郵便番号・都道府県・住所1・住所2・"
+                  "チケット・サポート・参加費・合計・枚数・席種 のどれかにしてください）")
+            continue
+        if i >= ncols:
+            issue(f"列の指定「{letter}」はシートにない列です")
+            continue
+        mapping[i] = field
+    return mapping
+
+
+_KATA = re.compile(r"^[\u30A0-\u30FF\u3040-\u309F\uFF65-\uFF9F\s　・]+$")
+_POSTAL = re.compile(r"^〒?\s*\d{3}[-－ー]?\d{4}$")
+_PHONE = re.compile(r"^\+?[\d\-－()（）\s]{10,15}$")
+
+
+def guess_columns(df: pd.DataFrame, category: str) -> str:
+    """値の形から各列の種類を推測して「A=名前 B=カナ ...」を作る（推測なので人が確認する）。"""
+    labels = []
+    amount_cols = []
+    used = set()
+    for ci, c in enumerate(df.columns):
+        vals = [v for v in df[c].tolist() if not is_blank(v)][:80]
+        label = "-"
+        if len(vals) >= max(3, len(df) * 0.2):
+            txt = [unicodedata.normalize("NFKC", str(v)).strip() for v in vals]
+            share = lambda f: sum(1 for t in txt if f(t)) / len(txt)
+            nums = [v for v in vals if isinstance(v, (int, float)) and not isinstance(v, bool)]
+            num_share = len(nums) / len(vals)
+            if share(lambda t: "@" in t) > .6:
+                label = "メール"
+            elif share(lambda t: bool(_POSTAL.match(t))) > .6 or (num_share > .8 and all(
+                    100000 <= n <= 9999999 for n in nums) and "postal" not in used and "phone" in used):
+                label = "郵便番号"
+            elif share(lambda t: bool(_PHONE.match(t)) and re.sub(r"\D", "", t)[:1] in "0" or
+                       (t.isdigit() and len(t) in (9, 10))) > .6:
+                label = "電話"
+            elif share(lambda t: clean_prefecture(t) in PREFECTURES) > .6:
+                label = "都道府県"
+            elif share(lambda t: bool(_KATA.match(t))) > .7 and "name_kana" not in used:
+                label = "カナ"
+            elif num_share > .8:
+                ints = [int(n) for n in nums]
+                if all(1 <= n <= 9 for n in ints):
+                    label = "枚数" if category in (LARGE, SMALL) else "人数"
+                elif all(30000 <= n <= 60000 for n in ints):
+                    label = "日付"  # Excel の日付シリアル値
+                elif ints == sorted(ints) and len(set(ints)) == len(ints) and ints[0] <= 2:
+                    label = "番号"
+                elif sum(1 for n in ints if n % 100 == 0) / len(ints) > .7:
+                    label = "金額"
+                    amount_cols.append(len(labels))
+            elif share(lambda t: bool(re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", t))) > .6:
+                label = "日付"
+            elif share(lambda t: bool(re.search(r"\d", t)) and len(t) >= 4) > .6:
+                label = "住所1" if "address1" not in used else "住所2"
+            elif share(lambda t: 2 <= len(t) <= 12 and not re.search(r"\d", t)) > .7 and "name_kanji" not in used:
+                label = "名前"
+        field = map_header(label, contains=False) or {"住所1": "address1", "住所2": "address2"}.get(label)
+        if field:
+            used.add(field)
+        labels.append(label)
+    # 金額列: 公演は チケット→サポート、お茶会は参加費、その他は合計
+    names = {LARGE: ["チケット", "サポート"], SMALL: ["チケット", "サポート"], TEA_PARTY: ["参加費"]}.get(category, ["合計"])
+    for n, i in enumerate(amount_cols):
+        labels[i] = names[n] if n < len(names) else "-"
+    while labels and labels[-1] == "-":
+        labels.pop()
+    return " ".join(f"{col_letter(i)}={l}" for i, l in enumerate(labels))
+
+
 def load_map(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(columns=MAP_COLUMNS)
@@ -146,13 +250,21 @@ def load_map(path: Path) -> pd.DataFrame:
     raise ValueError(f"文字コードを判定できません: {path.name}")
 
 
-def standardize_sheet(df: pd.DataFrame, category: str, issue) -> tuple[pd.DataFrame | None, list[str]]:
-    """1シートを標準の列に揃える。戻り値: (整形後の表, 未対応の列名)"""
-    header_row, mapping = find_header(df)
-    if header_row is None:
-        issue("ヘッダ行が見つかりません（column_aliases.csv で列名を追加してください）")
-        return None, []
-    unmapped = [str(h) for c, h in df.iloc[header_row].items() if c not in mapping and not is_blank(h)]
+def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "") -> tuple[pd.DataFrame | None, list[str]]:
+    """1シートを標準の列に揃える。spec（列の指定）があればそれを優先。戻り値: (整形後の表, 未対応の列名)"""
+    if spec.strip():
+        by_index = parse_columns(spec, len(df.columns), issue)
+        mapping = {df.columns[i]: f for i, f in by_index.items()}
+        header_row, unmapped = -1, []
+        if len(set(mapping.values())) < 1:
+            issue("列の指定から取り込める列がありません")
+            return None, []
+    else:
+        header_row, mapping = find_header(df)
+        if header_row is None:
+            issue("列名の行がありません。sheet_map.csv の columns 列で、各列が何かを指定してください")
+            return None, []
+        unmapped = [str(h) for c, h in df.iloc[header_row].items() if c not in mapping and not is_blank(h)]
     amounts = EXPECTED_AMOUNTS[category]
     found = set(mapping.values())
     for f in amounts:
@@ -169,6 +281,8 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue) -> tuple[pd.DataFr
 
     out = []
     for i in range(header_row + 1, len(df)):
+        if header_row == -1 and sum(1 for v in df.iloc[i] if map_header(v, contains=False)) >= 2:
+            continue  # 列の指定を使うとき、途中にある列名の行は飛ばす
         raw = {f: df.iat[i, df.columns.get_loc(c)] for c, f in mapping.items()}
         if all(is_blank(raw.get(f)) for f in PERSON_FIELDS) or _is_total_row(raw):
             continue
@@ -220,12 +334,22 @@ def main(argv=None):
         g = guess(str(sheet_name), file_name, set(mapping.values()))
         added.append({"source_file": file_name, "source_sheet": str(sheet_name), **g})
     if added:
-        smap = pd.concat([smap, pd.DataFrame(added)], ignore_index=True)
+        smap = pd.concat([smap, pd.DataFrame(added)], ignore_index=True).reindex(columns=MAP_COLUMNS).fillna("")
+    # 列名の行がないシートには、列の推測を columns 列に書く（空欄のときだけ。人の修正は上書きしない）
+    data = {(f, str(s)): df for s, df, f in sheets}
+    guessed_cols = 0
+    for idx, r in smap.iterrows():
+        df = data.get((r["source_file"], r["source_sheet"]))
+        if df is None or r["columns"].strip() or r["category"].strip() == "skip":
+            continue
+        if find_header(df)[0] is None:
+            smap.at[idx, "columns"] = guess_columns(df, r["category"].strip())
+            smap.at[idx, "note"] = "・".join(x for x in (r["note"], "列の指定（columns）を確認") if x)
+            guessed_cols += 1
     smap["target_sheet"] = [target_sheet(c.strip(), re.sub(r"\D", "", d), n.strip())
                             for c, d, n in zip(smap["category"], smap["date"], smap["name"])]
 
     # 整形
-    data = {(f, str(s)): df for s, df, f in sheets}
     report, merged = [], {}
     for idx, r in smap.iterrows():
         def issue(msg, r=r):
@@ -239,7 +363,7 @@ def main(argv=None):
         if cat not in CATEGORIES or not r["target_sheet"]:
             issue("sheet_map.csv の category / date / name を記入してください（取り込まない場合は category に skip）")
             continue
-        out, unmapped = standardize_sheet(data[(r["source_file"], r["source_sheet"])], cat, issue)
+        out, unmapped = standardize_sheet(data[(r["source_file"], r["source_sheet"])], cat, issue, r["columns"])
         if unmapped:
             issue("使わなかった列: " + ", ".join(unmapped) + "（必要なら column_aliases.csv に追加）")
         if out is None:
@@ -271,6 +395,8 @@ def main(argv=None):
     print(f"元のシート: {len(sheets)} / 整形できたシート: {len(merged)}（{dst}/）")
     if added:
         print(f"新しく見つかったシート: {len(added)} 件を {map_path} に追加しました")
+    if guessed_cols:
+        print(f"列名の行がないシート: {guessed_cols} 件 → {map_path} の columns 列に列の推測を書きました。確認してください")
     if len(guessed):
         print(f"推測で分類したシート: {len(guessed)} 件 → {map_path} の category / date / name を確認してください")
     if len(todo):

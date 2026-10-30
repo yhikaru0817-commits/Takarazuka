@@ -433,3 +433,64 @@ class MaskLeakRegressionTest(unittest.TestCase):
         self.assertEqual(list(out.iloc[0, :7]), list(df.iloc[0, :7]), "本物の列名は残す")
         self.assertEqual(out.iat[1, 1], 5000)
         self.assertEqual(out.iat[1, 6], "兵庫県", "都道府県だと確かめられる値だけ残す")
+
+
+class HeaderlessSheetTest(unittest.TestCase):
+    """列名の行がないシート: 列の推測と、sheet_map の columns 列での指定。"""
+
+    def make(self, d):
+        import random
+        random.seed(1)
+        rows = []
+        for i in range(1, 31):
+            rows.append([i, None, f"架空 花{chr(0x5B50 + i)}", f"カクウ ハナ{chr(0x30A2 + i)}", f"0{random.randint(7, 9)}0-0000-{i:04d}",
+                         f"{100 + i}-000{i % 10}", "大阪府", f"架空市{i}-2-3", 46028 + i % 3, 10000 + 500 * (i % 3),
+                         1000 * (i % 4), "メモ" if i % 7 == 0 else None])
+        rows.insert(15, ["No", None, "お名前", "フリガナ", "電話番号", "郵便番号", "都道府県", "住所", "日付", "代金", "サポート", "備考"])
+        orig = d / "original"; orig.mkdir()
+        with pd.ExcelWriter(orig / "2026管理.xlsx") as w:
+            pd.DataFrame(rows).to_excel(w, sheet_name="121渤海チケット", header=False, index=False)
+        return orig
+
+    def run_std(self, d, orig):
+        import contextlib, io
+        from takarazuka_data.standardize import main as standardize
+        with contextlib.redirect_stdout(io.StringIO()):
+            standardize([str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")])
+
+    def test_guess_and_override_columns(self):
+        from takarazuka_data.standardize import load_map
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = self.make(d)
+            # 途中に列名の行が1行あるだけでは、先頭からの判定でヘッダとみなされないことを確認するため category を先に決める
+            self.run_std(d, orig)
+            m = load_map(d / "map.csv")
+            m.loc[0, ["category", "date", "name"]] = ["large", "20260121", "渤海"]
+            m.loc[0, "columns"] = ""  # 推測をやり直させる
+            m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            self.run_std(d, orig)
+            m = load_map(d / "map.csv")
+            spec = m.loc[0, "columns"]
+            self.assertIn("C=名前", spec)
+            self.assertIn("D=カナ", spec)
+            self.assertIn("E=電話", spec)
+            self.assertIn("F=郵便番号", spec)
+            self.assertIn("G=都道府県", spec)
+            self.assertIn("H=住所1", spec)
+            self.assertIn("J=チケット", spec)
+            self.assertIn("K=サポート", spec)
+            self.assertIn("列の指定", m.loc[0, "note"])
+            out = pd.read_csv(d / "raw" / "2026_0121_大公演_渤海.csv", dtype=str).fillna("")
+            self.assertEqual(len(out), 30, "途中の列名の行は飛ばす")
+            self.assertEqual(out.iloc[0]["name katakana"], "カクウ ハナィ")
+            self.assertEqual(out.iloc[0]["post-number"], "101-0001")
+
+            # 人が指定を直すと、それが優先され、次回も上書きされない
+            m.loc[0, "columns"] = "A=番号 C=名前 D=カナ E=電話 J=サポート K=チケット"
+            m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            self.run_std(d, orig)
+            self.assertEqual(load_map(d / "map.csv").loc[0, "columns"], "A=番号 C=名前 D=カナ E=電話 J=サポート K=チケット")
+            out = pd.read_csv(d / "raw" / "2026_0121_大公演_渤海.csv", dtype=str).fillna("")
+            self.assertEqual((out.iloc[0]["Ticket"], out.iloc[0]["Support"]), ("1000", "10500"))
+            self.assertEqual(out.iloc[0]["post-number"], "", "指定しなかった列は取り込まない")
