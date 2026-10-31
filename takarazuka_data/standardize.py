@@ -343,6 +343,12 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "", sk
         by_index = parse_columns(spec, len(df.columns), issue)
         mapping = {df.columns[i]: f for i, f in by_index.items()}
         header_row, unmapped = -1, []
+        hr, hm = find_header(df)  # 列名の行もあるときは、列の指定と食い違っていないか確かめる（列を削除・移動したときの事故防止）
+        if hr is not None:
+            for f in set(mapping.values()) & set(hm.values()):
+                if not ({c for c, ff in mapping.items() if ff == f} & {c for c, ff in hm.items() if ff == f}):
+                    issue(f"列の指定の「{OUTPUT_HEADERS[f]}」の列が、列名の行が示す列と違います"
+                          "（列を削除・移動した可能性。columns を直すか、空にして列名で読んでください）")
         if len(set(mapping.values())) < 1:
             issue("列の指定から取り込める列がありません")
             return None, []
@@ -612,6 +618,9 @@ def main(argv=None):
         print(f"  {n}枚のシートを1つにまとめました: {target}")
     if dup_pairs:
         print(f"★ 同じ人・同じ金額が重なっているシートの組: {dup_pairs} 組 → {map_path} の note 列を確認してください（コピーなら skip）")
+    mismatch = [x for x in report if "列名の行が示す列と違います" in x["message"]]
+    for x in mismatch[:10]:
+        print(f"  ✗ {x['source_sheet']}: {x['message']}")
     if inherited:
         print(f"シート名を変えたシートの設定を引き継ぎました: {inherited} 件")
     if orphans:

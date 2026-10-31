@@ -918,3 +918,34 @@ class SplitAddressTest(unittest.TestCase):
             self.assertEqual(b["address 1"][0], "宝塚市旭町2-3-15", "都道府県が重ならない")
             c = pd.read_csv(d / "raw" / "丙_グッズ.csv", dtype=str).fillna("")
             self.assertEqual((c["address 1"][1], c["address 2"][1]), ("宝塚市旭町1-3-15", "ハイツ1"))
+
+
+class SpecHeaderMismatchTest(unittest.TestCase):
+    def test_warns_when_columns_shifted(self):
+        import contextlib, io
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            names = [f"架空 花{chr(0x5B50 + i)}" for i in range(6)]
+            kanas = [f"カクウ ハナ{chr(0x30A2 + 2 * i)}" for i in range(6)]
+            # 列を1つ削除したあとのシート（サポート代は D 列から C 列に移った）
+            with pd.ExcelWriter(orig / "管理.xlsx") as w:
+                pd.DataFrame({"名前": names, "フリガナ": kanas, "サポート代": [1000] * 6, "備考": ["メモ"] * 6}
+                             ).to_excel(w, sheet_name="606", index=False)
+            args = [str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            m = load_map(d / "map.csv")
+            m.loc[0, ["category", "date", "name", "columns"]] = ["large", "20260606", "呂布東京", "A=名前 B=カナ D=サポート"]
+            m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                standardize(args)
+            self.assertIn("列名の行が示す列と違います", buf.getvalue())
+            m.loc[0, "columns"] = "A=名前 B=カナ C=サポート"           # 正しい指定なら警告は出ない
+            m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                standardize(args)
+            self.assertNotIn("列名の行が示す列と違います", buf.getvalue())
