@@ -1,14 +1,17 @@
 """シート名からイベント種別を判定する。
 
-命名規則:
-    公演 (large/small) : year_date_種別_公演名    例) 2026_0121_大公演_渤海
-    お茶会 (large 用)  : 公演名_お茶会
-    親睦会 (small 用)  : 公演名_親睦会
-    グッズ             : 公演名_グッズ
-    annual             : year_date_企画名
-    今回のチケット申請 : year_date_種別_公演名_申請   例) 2026_1105_大公演_星の詩_申請
-    名簿（連絡先のみ） : 名前_名簿                     例) 会員_名簿
-    事後販売           : 公演名_事後販売               例) 呂布_事後販売
+命名規則（標準）: 年_月日_タグ_名前    ※ 公演と年間企画は日付が必要。ほかは日付を省略できる（タグ_名前）
+    large   大劇場公演           2026_0404_large_呂布宝塚
+    small   それ以外の公演       2026_0121_small_雨にじむ渤海
+    tea     お茶会               tea_呂布宝塚          （同じ名前の公演に紐づく）
+    social  親睦会               2026_0125_social_雨にじむ渤海
+    goods   グッズ               goods_呂布東京
+    post    事後販売             post_呂布             （どの公演にも紐づけない）
+    refund  返金                 refund_ガイズ宝塚      （マイナスの金額として同じ名前のグッズに加える）
+    roster  名簿（連絡先のみ）   roster_お礼状
+    annual  年間企画             2026_0331_annual_誕生日企画   （タグなしの 2026_0331_誕生日企画 も可）
+    今回のチケット申請 : year_date_種別_公演名_申請   例) 2026_1105_large_星の詩_申請
+従来の形（公演名_親睦会 や 2026_0121_大公演_渤海）も読める。
 """
 from __future__ import annotations
 
@@ -19,8 +22,8 @@ from datetime import date
 
 LARGE = "large"
 SMALL = "small"
-TEA_PARTY = "tea_party"  # お茶会 (large に紐づく)
-SOCIAL = "social"  # 親睦会 (small に紐づく)
+TEA_PARTY = "tea"  # お茶会（同じ名前の公演に紐づく）
+SOCIAL = "social"  # 親睦会（同じ名前の公演に紐づく。お茶会と同じ扱い）
 ANNUAL = "annual"
 GOODS = "goods"
 APPLICATION = "application"  # 今回のチケット申請（実績ではなく見込み）
@@ -37,14 +40,29 @@ APPLICATION_SUFFIXES = ("申請", "申込", "チケット申請")
 
 # サフィックス → (種別, 紐づけ先の公演種別)
 SUFFIXES = {
-    "お茶会": (TEA_PARTY, LARGE),
-    "親睦会": (SOCIAL, SMALL),
+    "お茶会": (TEA_PARTY, None),
+    "親睦会": (SOCIAL, None),
     "グッズ": (GOODS, None),  # large/small どちらでも可
     "名簿": (ROSTER, None),  # 例) 会員_名簿
     "事後販売": (POST_SALE, None),  # 例) 呂布_事後販売
 }
 
 _DATED = re.compile(r"^(\d{4})_(\d{4})_(.+)$")
+
+# 標準のタグ（小文字。日本語も可）
+TAGS = {
+    "large": LARGE, "大公演": LARGE, "大劇場": LARGE, "大劇場公演": LARGE,
+    "small": SMALL, "小公演": SMALL, "小劇場": SMALL, "別箱": SMALL, "別箱公演": SMALL,
+    "tea": TEA_PARTY, "お茶会": TEA_PARTY,
+    "social": SOCIAL, "親睦会": SOCIAL,
+    "goods": GOODS, "グッズ": GOODS,
+    "post": POST_SALE, "事後販売": POST_SALE,
+    "refund": REFUND, "返金": REFUND,
+    "roster": ROSTER, "名簿": ROSTER,
+    "annual": ANNUAL, "年間企画": ANNUAL,
+}
+_TAGGED = re.compile(r"^(?:(\d{4})_(\d{4})_)?([^_]+)_(.+)$")
+_NEEDS_DATE = (LARGE, SMALL, ANNUAL)
 
 
 def normalize_text(s: str) -> str:
@@ -98,6 +116,25 @@ def _split_performance(rest: str):
     return None
 
 
+def _parse_tagged(sheet_name: str, text: str):
+    """'2026_0121_small_雨にじむ渤海' / 'tea_呂布宝塚' のように、タグが名前の前にある標準の形。"""
+    m = _TAGGED.match(text)
+    cat = TAGS.get(m.group(3).lower()) if m else None
+    if not cat:
+        return None
+    name = re.sub(r"(?:[\s_]*\(\d{1,2}\)|_\d{1,2})$", "", m.group(4)).strip()  # 連番（(2) や _2）は同じイベント
+    if not name:
+        return SheetInfo(sheet_name, UNKNOWN, "", error="イベント名が空です")
+    event_date, err = None, None
+    if m.group(1):
+        event_date = _parse_date(m.group(1), m.group(2))
+        if event_date is None:
+            err = f"日付が不正です: {m.group(1)}_{m.group(2)}"
+    elif cat in _NEEDS_DATE:
+        err = "公演・年間企画のシート名には日付（年_月日）が必要です"
+    return SheetInfo(sheet_name, cat, name, event_date, None, error=err)
+
+
 def classify_sheet(sheet_name: str) -> SheetInfo:
     text = normalize_text(sheet_name)
     text = re.sub(r"\s*_\s*", "_", text)
@@ -114,6 +151,10 @@ def classify_sheet(sheet_name: str) -> SheetInfo:
                                  error="申請シートは 年_月日_大公演/小公演_公演名_申請 の形式にしてください")
             # link_category に公演種別 (large/small) を持たせる
             return SheetInfo(sheet_name, APPLICATION, perf[1], dated[0], perf[0], error=dated[2])
+
+    tagged = _parse_tagged(sheet_name, text)
+    if tagged:
+        return tagged
 
     for suffix, (category, link_category) in SUFFIXES.items():
         if text.endswith("_" + suffix):

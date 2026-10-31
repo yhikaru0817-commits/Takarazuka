@@ -16,7 +16,7 @@
 ## standardized_all.csv の列
 | 列 | 内容 |
 |---|---|
-| `sheet` | 整形後のシート名（`sheet_index.csv` の `sheet` と同じ） |
+| `sheet` | 整形後のシート名。`年_月日_タグ_名前`（公演・年間企画）または `タグ_名前`（`sheet_index.csv` の `sheet` と同じ） |
 | `category` | イベントの種別（下の表） |
 | `event_name` | 公演名・企画名（略称。お茶会・親睦会・グッズは、紐づく公演と同じ名前） |
 | `event_date` | 日付 `YYYYMMDD`（公演・年間企画のみ。ほかは空） |
@@ -32,7 +32,7 @@
 | `prefecture` | 都道府県（`東京` → `東京都`） |
 | `address 1` | 住所（市区町村・町名・番地。**複数の列に分かれていた場合は結合済み**） |
 | `address 2` | 建物名など |
-| `Ticket`, `Support`, `Entry_fee`, `total_cost` | 金額（円・整数）。種別ごとに使う列が決まっています（下の表） |
+| `Ticket`, `Support`, `total_cost` | 金額（円・整数）。種別ごとに使う列が決まっています（下の表） |
 | `枚数`, `席種`, `LINE ID` | 元のシートにあった場合のみ |
 
 ## 種別（category）と金額の列
@@ -40,8 +40,8 @@
 |---|---|---|---|
 | `large` | 大劇場公演のチケット | `Ticket`（チケット代）、`Support`（サポート代＝お花代） | |
 | `small` | それ以外の公演のチケット | `Ticket`、`Support` | |
-| `tea_party` | お茶会 | `Entry_fee`（参加費） | 同じ公演名の `large` |
-| `social` | 親睦会 | `total_cost` | 同じ公演名の `small` |
+| `tea` | お茶会 | `total_cost`（参加費） | 同じ公演名の公演 |
+| `social` | 親睦会 | `total_cost` | 同じ公演名の公演（お茶会と同じ扱い） |
 | `goods` | グッズ | `total_cost`（返金は `row_type` が `refund` の行で、マイナス） | 同じ公演名の `large` / `small` |
 | `post_sale` | 事後販売 | `total_cost` | どの公演にも紐づけない |
 | `annual` | 年間企画（誕生日企画・カレンダーなど） | `total_cost` | |
@@ -83,7 +83,7 @@
 | 列 | 内容 |
 |---|---|
 | event_id | イベントID（例 `L_20260121大公演渤海`） |
-| category | `large` / `small` / `tea_party`(お茶会) / `social`(親睦会) / `annual` / `goods` / `post_sale`(事後販売。公演に紐づけない) / `application`(今回の申請) |
+| category | `large` / `small` / `tea`(お茶会) / `social`(親睦会) / `annual` / `goods` / `post_sale`(事後販売。公演に紐づけない) / `application`(今回の申請) |
 | name | 公演名・イベント名 |
 | event_date | シート名の日付（お茶会・親睦会・グッズは空） |
 | link_category | お茶会→`large`、親睦会→`small`。application ではその公演の種別 (`large`/`small`) |
@@ -104,7 +104,7 @@
 | amount | 円（整数） |
 
 ### summary — 人ごとの合計（実績）
-`customer_id, large_ticket, large_support, small_ticket, small_support, tea_party, social, annual, goods, post_sale, support_total, total`
+`customer_id, large_ticket, large_support, small_ticket, small_support, tea, social, annual, goods, post_sale, support_total, total`
 （全期間の合計。期間を絞る場合は `spending` を `select_events` の結果で絞って集計してください）
 
 ### ticket_history — 過去公演の申込実績

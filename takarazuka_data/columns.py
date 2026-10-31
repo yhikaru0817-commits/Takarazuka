@@ -36,7 +36,7 @@ DEFAULT_SEAT = {LARGE: "SS", SMALL: "S"}
 EXPECTED_AMOUNTS = {
     LARGE: ["ticket", "support"],
     SMALL: ["ticket", "support"],
-    TEA_PARTY: ["entry_fee"],
+    TEA_PARTY: ["total_cost"],
     SOCIAL: ["total_cost"],
     ANNUAL: ["total_cost"],
     GOODS: ["total_cost"],
@@ -71,8 +71,9 @@ _ALIASES = {
     "show_time": ["showtime", "time", "時間", "開演", "開演時間", "公演時間", "回"],
     "alt_dates": ["altdates", "alternative", "振替", "振替日程", "振替希望", "振替日", "振替1", "振替2", "振替3",
                   "第2希望", "第3希望", "第4希望", "第5希望"],
-    "entry_fee": ["entryfee", "entry", "参加費", "会費", "参加料", "お茶会費"],
+    "entry_fee": [],  # 参加費は total_cost にまとめた（ちがう列名の言い換えは total_cost の一覧にある）
     "total_cost": ["totalcost", "total", "cost", "合計", "合計金額", "金額", "総額", "購入金額",
+                   "entryfee", "entry", "参加費", "会費", "参加料", "お茶会費",
                    "ご協力金額", "協力金額", "ご協力金", "協力金", "ご入金額", "入金額", "返金額", "返金金額"],
 }
 

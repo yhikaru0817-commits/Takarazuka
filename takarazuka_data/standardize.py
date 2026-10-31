@@ -33,6 +33,7 @@ from .pipeline import _is_total_row, column_ranks, find_header, gather_raw, norm
 CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS, POST_SALE, REFUND, ROSTER, "skip"]
 CATEGORY_ALIASES = {
     "大公演": LARGE, "大劇場": LARGE, "小公演": SMALL, "別箱": SMALL, "お茶会": TEA_PARTY, "親睦会": SOCIAL,
+    "tea_party": TEA_PARTY, "post": POST_SALE,  # 以前の名前
     "グッズ": GOODS, "事後販売": POST_SALE, "返金": REFUND, "年間企画": ANNUAL, "企画": ANNUAL, "名簿": ROSTER,
     "取り込まない": "skip", "除外": "skip", "スキップ": "skip", "対象外": "skip",
 }
@@ -152,15 +153,12 @@ def guess(sheet_name: str, file_name: str, fields: set) -> dict:
 def target_sheet(category: str, date: str, name: str) -> str:
     """標準のシート名を作る。必要な項目が欠けていれば空文字。"""
     name = normalize_text(name).replace("_", " ")
-    if category in (LARGE, SMALL):
-        return f"{date[:4]}_{date[4:8]}_{CATEGORY_LABEL[category]}_{name}" if len(date) == 8 and name else ""
-    if category == REFUND:  # 返金は、同じ公演名のグッズにマイナスの金額として加える
-        return f"{name}_グッズ" if name else ""
-    if category in SUFFIX_LABEL:
-        return f"{name}_{SUFFIX_LABEL[category]}" if name else ""
-    if category == ANNUAL:
-        return f"{date[:4]}_{date[4:8]}_{name}" if len(date) == 8 and name else ""
-    return ""
+    if category in (LARGE, SMALL, ANNUAL):  # 年_月日_タグ_名前
+        return f"{date[:4]}_{date[4:8]}_{category}_{name}" if len(date) == 8 and name else ""
+    if category == REFUND:  # 返金は、同じ名前のグッズにマイナスの金額として加える
+        return f"goods_{name}" if name else ""
+    tag = {TEA_PARTY: "tea", SOCIAL: "social", GOODS: "goods", POST_SALE: "post", ROSTER: "roster"}.get(category)
+    return f"{tag}_{name}" if tag and name else ""  # タグ_名前（日付は付けない。同じイベントのシートを1つにまとめるため）
 
 
 # ---------- 列名の行がないシート: 列の指定 ----------
@@ -337,10 +335,9 @@ def build_summary_tables(merged: dict, merged_idx: dict, smap: pd.DataFrame):
             perf.setdefault((m["category"], name_key(m["name"])), []).append(target)
 
     def linked(m):
-        want = {TEA_PARTY: [LARGE], SOCIAL: [SMALL], GOODS: [LARGE, SMALL]}.get(m["category"])
-        if not want:
+        if m["category"] not in (TEA_PARTY, SOCIAL, GOODS):  # 同じ名前の公演に紐づく（お茶会・親睦会・グッズは同じ扱い）
             return ""
-        found = [t for c in want for t in perf.get((c, name_key(m["name"])), [])]
+        found = [t for c in (LARGE, SMALL) for t in perf.get((c, name_key(m["name"])), [])]
         return " / ".join(found)
 
     index_rows, parts_all = [], []

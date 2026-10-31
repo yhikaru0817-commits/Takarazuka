@@ -41,7 +41,7 @@ class ColumnsTest(unittest.TestCase):
         self.assertEqual(map_header("name(漢字)"), "name_kanji")
         self.assertEqual(map_header("フリガナ"), "name_kana")
         self.assertEqual(map_header("phone-number"), "phone")
-        self.assertEqual(map_header("Ｅｎｔｒｙ＿ｆｅｅ"), "entry_fee")
+        self.assertEqual(map_header("Ｅｎｔｒｙ＿ｆｅｅ"), "total_cost")
         self.assertEqual(map_header("住所①"), "address1")
 
     def test_values(self):
@@ -182,7 +182,7 @@ class SeatPriceEstimateTest(unittest.TestCase):
                 d / "2025_0601_大公演_旧作.csv", index=False)
             # 価格改定後: 新しい公演の単価を採用する
             pd.DataFrame([a + ["SS", 1, 12500, 3000], b + ["SS", 3, 37500, 0]], columns=cols).to_csv(
-                d / "2026_0121_大公演_渤海.csv", index=False)
+                d / "2026_0121_large_渤海.csv", index=False)
             # LINE からの申請 CSV（長い列名・cp932）
             pd.DataFrame([a + ["11/12 15:00", "2", "", "10000"]],
                          columns=STD + ["第1希望の公演日時", "希望枚数を入力してください", "席種", "サポート代（見込額）"]
@@ -324,13 +324,13 @@ class StandardizeTest(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 todo = standardize(args)
             m = load_map(smap).set_index("source_sheet")
-            self.assertEqual(m.at["渤海 宝塚大劇場 2026.1.21", "target_sheet"], "2026_0121_大公演_渤海")
-            self.assertEqual(m.at["渤海お茶会参加者", "target_sheet"], "渤海_お茶会")
-            self.assertEqual(m.at["2025年12月クリスマス会", "target_sheet"], "2025_1201_クリスマス会")
+            self.assertEqual(m.at["渤海 宝塚大劇場 2026.1.21", "target_sheet"], "2026_0121_large_渤海")
+            self.assertEqual(m.at["渤海お茶会参加者", "target_sheet"], "tea_渤海")
+            self.assertEqual(m.at["2025年12月クリスマス会", "target_sheet"], "2025_1201_annual_クリスマス会")
             self.assertIn("日が不明", m.at["2025年12月クリスマス会", "note"])
             self.assertEqual(todo, 1, "分類できない「メモ」だけ記入待ち")
 
-            out = pd.read_csv(raw / "2026_0121_大公演_渤海.csv", dtype=str).fillna("")
+            out = pd.read_csv(raw / "2026_0121_large_渤海.csv", dtype=str).fillna("")
             self.assertEqual(list(out.columns), STD + ["Ticket", "Support"], "指定の列名・列順")
             self.assertEqual(len(out), 1, "タイトル行・合計行は除く")
             self.assertEqual(out.iloc[0]["phone-number"], "09000000001")
@@ -345,7 +345,7 @@ class StandardizeTest(unittest.TestCase):
             fixed.to_csv(smap, index=False, encoding="cp932")
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(standardize(args), 0)
-            self.assertTrue((raw / "2025_1220_クリスマス会.csv").exists())
+            self.assertTrue((raw / "2025_1220_annual_クリスマス会.csv").exists())
 
             r = run(sorted(p for p in raw.glob("*.csv") if "1201" not in p.name))
         self.assertEqual(len(r.persons), 1, "整形後のシート同士で同一人物にまとまる")
@@ -377,7 +377,7 @@ class RosterSplitTest(unittest.TestCase):
                 todo = standardize([str(orig), "-o", str(raw), "--map", str(d / "map.csv"),
                                     "--aliases", str(d / "none.csv")])
             self.assertEqual(todo, 0)
-            self.assertTrue((raw / "会員_名簿.csv").exists())
+            self.assertTrue((raw / "roster_会員.csv").exists())
             r = run(sorted(raw.glob("*.csv")))
 
         p = r.persons.set_index("name_kana")
@@ -481,7 +481,7 @@ class HeaderlessSheetTest(unittest.TestCase):
             self.assertIn("J=チケット", spec)
             self.assertIn("K=サポート", spec)
             self.assertIn("列の指定", m.loc[0, "note"])
-            out = pd.read_csv(d / "raw" / "2026_0121_大公演_渤海.csv", dtype=str).fillna("")
+            out = pd.read_csv(d / "raw" / "2026_0121_large_渤海.csv", dtype=str).fillna("")
             self.assertEqual(len(out), 30, "途中の列名の行は飛ばす")
             self.assertEqual(out.iloc[0]["name katakana"], "カクウ ハナィ")
             self.assertEqual(out.iloc[0]["post-number"], "101-0001")
@@ -491,7 +491,7 @@ class HeaderlessSheetTest(unittest.TestCase):
             m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
             self.run_std(d, orig)
             self.assertEqual(load_map(d / "map.csv").loc[0, "columns"], "A=番号 C=名前 D=カナ E=電話 J=サポート K=チケット")
-            out = pd.read_csv(d / "raw" / "2026_0121_大公演_渤海.csv", dtype=str).fillna("")
+            out = pd.read_csv(d / "raw" / "2026_0121_large_渤海.csv", dtype=str).fillna("")
             self.assertEqual((out.iloc[0]["Ticket"], out.iloc[0]["Support"]), ("1000", "10500"))
             self.assertEqual(out.iloc[0]["post-number"], "", "指定しなかった列は取り込まない")
 
@@ -507,8 +507,8 @@ class SheetMapRobustnessTest(unittest.TestCase):
 
     def test_category_and_date_variants(self):
         from takarazuka_data.standardize import normalize_category, normalize_date
-        for v, want in (("Small", "small"), (" LARGE ", "large"), ("大公演", "large"), ("お茶会", "tea_party"),
-                        ("Tea Party", "tea_party"), ("取り込まない", "skip"), ("グッズ", "goods")):
+        for v, want in (("Small", "small"), (" LARGE ", "large"), ("大公演", "large"), ("お茶会", "tea"),
+                        ("Tea Party", "tea"), ("取り込まない", "skip"), ("グッズ", "goods")):
             self.assertEqual(normalize_category(v), want)
         for v in ("20260121", "2026/1/21", "2026-01-21 00:00:00", "20,260,121", "２０２６年１月２１日"):
             self.assertEqual(normalize_date(v), "20260121", v)
@@ -539,13 +539,13 @@ class SheetMapRobustnessTest(unittest.TestCase):
             m.reset_index().to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
             self.run_std(d, orig)
             m = load_map(d / "map.csv").set_index("source_sheet")
-            self.assertEqual(m.at["グッズA", "target_sheet"], "渤海_グッズ")
-            self.assertEqual(m.at["企画B", "target_sheet"], "2026_0331_誕生日")
-            self.assertEqual(m.at["チケットC", "target_sheet"], "2026_0121_小公演_渤海")
+            self.assertEqual(m.at["グッズA", "target_sheet"], "goods_渤海")
+            self.assertEqual(m.at["企画B", "target_sheet"], "2026_0331_annual_誕生日")
+            self.assertEqual(m.at["チケットC", "target_sheet"], "2026_0121_small_渤海")
             self.assertTrue(m.at["チケットC", "columns"], "名前の列がないシートも列を推測する")
-            g = pd.read_csv(d / "raw" / "渤海_グッズ.csv", dtype=str)
+            g = pd.read_csv(d / "raw" / "goods_渤海.csv", dtype=str)
             self.assertEqual(g["total_cost"].tolist()[:3], ["1500", "3000", "4500"])
-            k = pd.read_csv(d / "raw" / "2026_0331_誕生日.csv", dtype=str)
+            k = pd.read_csv(d / "raw" / "2026_0331_annual_誕生日.csv", dtype=str)
             self.assertEqual(k["total_cost"].tolist()[:3], ["1000", "2000", "3000"])
 
     def test_city_only_addresses_do_not_match_people(self):
@@ -583,7 +583,7 @@ class WideSheetSpecTest(unittest.TestCase):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 standardize(args)
-            out = pd.read_csv(d / "raw" / "2026_0606_大公演_呂布東京.csv", dtype=str)
+            out = pd.read_csv(d / "raw" / "2026_0606_large_呂布東京.csv", dtype=str)
             self.assertEqual(len(out), 10)
             self.assertEqual(out.iloc[0]["name katakana"], "カクウ ハナア")
             self.assertEqual((out.iloc[0]["Support"], out.iloc[0]["枚数"]), ("1000", "2"))
@@ -615,8 +615,8 @@ class RedownloadedFileTest(unittest.TestCase):
                 standardize(args)
             m = load_map(d / "map.csv")
             self.assertEqual(len(m), 1, "同じシートとして扱い、行を増やさない")
-            self.assertEqual(m.loc[0, "target_sheet"], "2026_0331_誕生日企画")
-            self.assertTrue((d / "raw" / "2026_0331_誕生日企画.csv").exists())
+            self.assertEqual(m.loc[0, "target_sheet"], "2026_0331_annual_誕生日企画")
+            self.assertTrue((d / "raw" / "2026_0331_annual_誕生日企画.csv").exists())
 
 
 class RedRowAndHubTest(unittest.TestCase):
@@ -645,13 +645,13 @@ class RedRowAndHubTest(unittest.TestCase):
             m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
             with contextlib.redirect_stdout(io.StringIO()):
                 standardize(args)
-            out = pd.read_csv(d / "raw" / "2026_0606_大公演_呂布東京.csv", dtype=str)
+            out = pd.read_csv(d / "raw" / "2026_0606_large_呂布東京.csv", dtype=str)
             self.assertEqual(len(out), 5)
             self.assertNotIn("3000", out["Support"].tolist())
             self.assertEqual(load_map(d / "map.csv").loc[0, "totals"], "Ticket 0円 / Support 18,000円 / 赤い行を除外 1行")
             with contextlib.redirect_stdout(io.StringIO()):
                 standardize(args + ["--include-red"])
-            self.assertEqual(len(pd.read_csv(d / "raw" / "2026_0606_大公演_呂布東京.csv")), 6)
+            self.assertEqual(len(pd.read_csv(d / "raw" / "2026_0606_large_呂布東京.csv")), 6)
 
     def test_values_shared_by_many_people_are_not_reviewed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -660,7 +660,7 @@ class RedRowAndHubTest(unittest.TestCase):
                            f"090-0000-{i:04d}", f"10{i}-0001", addr=f"架空市{i}-2-3") + [1000, 0] for i in range(8)]
             rows += [person("なし", "ナシ", f"x{i}@example.com", f"080-1111-{i:04d}", f"20{i}-0002",
                             addr=f"試験市{i}-4-5") + [1000, 0] for i in range(7)]
-            p = d / "2026_0121_大公演_渤海.csv"
+            p = d / "2026_0121_large_渤海.csv"
             pd.DataFrame(rows, columns=STD + ["Ticket", "Support"]).to_csv(p, index=False)
             r = run([p])
         self.assertEqual(len(r.persons), 15)
@@ -708,7 +708,7 @@ class PostSaleAndRenameTest(unittest.TestCase):
             d = Path(tmp)
             a = person("架空 花子", "カクウ ハナコ", "hanako@example.com", "090-0000-0001", "100-0001")
             pd.DataFrame([a + [1000, 0]], columns=STD + ["Ticket", "Support"]).to_csv(
-                d / "2026_0606_大公演_呂布東京.csv", index=False)
+                d / "2026_0606_large_呂布東京.csv", index=False)
             pd.DataFrame([a + [3000]], columns=STD + ["total_cost"]).to_csv(d / "呂布_事後販売.csv", index=False)
             r = run(sorted(d.glob("*.csv")))
         self.assertEqual(int(r.summary["post_sale"].iloc[0]), 3000)
@@ -742,7 +742,7 @@ class PostSaleAndRenameTest(unittest.TestCase):
             self.assertEqual(len(m), 1, "古い行は新しい行に置き換わる")
             self.assertEqual(m.loc[0, "columns"], "B=名前 C=カナ D=サポート")
             self.assertIn("引き継ぎました: 1 件", buf.getvalue())
-            out = pd.read_csv(d / "raw" / "2026_0404_大公演_呂布宝塚.csv", dtype=str)
+            out = pd.read_csv(d / "raw" / "2026_0404_large_呂布宝塚.csv", dtype=str)
             self.assertEqual(len(out), 8)
 
 
@@ -775,7 +775,7 @@ class SplitSheetsTest(unittest.TestCase):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 standardize(args)
-            out = pd.read_csv(d / "raw" / "雨にじむ渤海_親睦会.csv", dtype=str)
+            out = pd.read_csv(d / "raw" / "social_雨にじむ渤海.csv", dtype=str)
             self.assertEqual(len(out), 16, "3枚を1つのイベントにまとめる")
             self.assertIn("3枚のシートを1つにまとめました", buf.getvalue())
             self.assertIn("重なっているシートの組: 1 組", buf.getvalue())
@@ -817,12 +817,12 @@ class RefundTest(unittest.TestCase):
             m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
             with contextlib.redirect_stdout(io.StringIO()):
                 standardize(args)
-            g = pd.read_csv(d / "raw" / "ガイズ宝塚_グッズ.csv", dtype=str)
+            g = pd.read_csv(d / "raw" / "goods_ガイズ宝塚.csv", dtype=str)
             self.assertEqual(len(g), 11, "参加費6行 + 返金5行を、同じグッズのシートにまとめる")
             self.assertEqual(sorted(g["total_cost"].astype(int).tolist()), [-3000] * 5 + [6000] * 6)
             large = pd.DataFrame([[names[0], kanas[0], "u0@example.com", 0, 0]],
                                  columns=["name(漢字)", "name katakana", "mail", "Ticket", "Support"])
-            large.to_csv(d / "raw" / "2025_0726_大公演_ガイズ宝塚.csv", index=False)
+            large.to_csv(d / "raw" / "2025_0726_large_ガイズ宝塚.csv", index=False)
             r = run(sorted((d / "raw").glob("*.csv")))
         s = r.summary.merge(r.persons[["customer_id", "name_kana"]], on="customer_id").set_index("name_kana")
         self.assertEqual(int(s.at["カクウ ハナア", "goods"]), 3000, "返金された人は 6000 − 3000 = 3000")
@@ -854,12 +854,12 @@ class StaleOutputTest(unittest.TestCase):
             m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
             with contextlib.redirect_stdout(io.StringIO()):
                 standardize(args)
-            self.assertEqual([p.name for p in raw.glob("*.csv")], ["2026_0331_誕生日企画.csv"])
+            self.assertEqual([p.name for p in raw.glob("*.csv")], ["2026_0331_annual_誕生日企画.csv"])
             m.loc[0, ["date", "name"]] = ["20260401", "誕生日"]            # 設定を変えて再実行
             m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
             with contextlib.redirect_stdout(io.StringIO()):
                 standardize(args)
-            self.assertEqual([p.name for p in raw.glob("*.csv")], ["2026_0401_誕生日.csv"], "前回の出力は残らない")
+            self.assertEqual([p.name for p in raw.glob("*.csv")], ["2026_0401_annual_誕生日.csv"], "前回の出力は残らない")
 
 
 class PerUnitHeaderTest(unittest.TestCase):
@@ -874,8 +874,8 @@ class PerUnitHeaderTest(unittest.TestCase):
             d = Path(tmp)
             pd.DataFrame({"サポート代": [1000, 2000], "一人あたりサポート代": [500, 1000], "メール": ["a@example.com", "b@example.com"],
                           "フリガナ": ["カクウ ハナコ", "シケン タロウ"], "備考": ["", ""], "名前": ["架空 花子", "試験 太郎"],
-                          "枚数": [2, 2]}).to_csv(d / "2026_0606_大公演_呂布東京.csv", index=False)
-            r = run([d / "2026_0606_大公演_呂布東京.csv"])
+                          "枚数": [2, 2]}).to_csv(d / "2026_0606_large_呂布東京.csv", index=False)
+            r = run([d / "2026_0606_large_呂布東京.csv"])
         self.assertEqual(sorted(r.spending.loc[r.spending["item"] == "support", "amount"].tolist()), [1000, 2000])
 
 
@@ -911,12 +911,12 @@ class SplitAddressTest(unittest.TestCase):
             m.reset_index().to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
             with contextlib.redirect_stdout(io.StringIO()):
                 standardize(args)
-            a = pd.read_csv(d / "raw" / "甲_グッズ.csv", dtype=str).fillna("")
+            a = pd.read_csv(d / "raw" / "goods_甲.csv", dtype=str).fillna("")
             self.assertEqual(a["prefecture"][0] + a["address 1"][0] + a["address 2"][0], "兵庫県宝塚市旭町2-3-15サンライズ202")
             self.assertEqual(a["address 1"][2], "川西市東町4-5")
-            b = pd.read_csv(d / "raw" / "乙_グッズ.csv", dtype=str).fillna("")
+            b = pd.read_csv(d / "raw" / "goods_乙.csv", dtype=str).fillna("")
             self.assertEqual(b["address 1"][0], "宝塚市旭町2-3-15", "都道府県が重ならない")
-            c = pd.read_csv(d / "raw" / "丙_グッズ.csv", dtype=str).fillna("")
+            c = pd.read_csv(d / "raw" / "goods_丙.csv", dtype=str).fillna("")
             self.assertEqual((c["address 1"][1], c["address 2"][1]), ("宝塚市旭町1-3-15", "ハイツ1"))
 
 
@@ -970,7 +970,7 @@ class LifeEventReviewTest(unittest.TestCase):
             pd.DataFrame([old + [1000, 0], mv1 + [1000, 0], f1 + [1000, 0]], columns=cols).to_csv(
                 d / "2026_0121_小公演_渤海.csv", index=False)
             pd.DataFrame([new + [1000, 0], mv2 + [1000, 0], f2 + [1000, 0]], columns=cols).to_csv(
-                d / "2026_0404_大公演_呂布宝塚.csv", index=False)
+                d / "2026_0404_large_呂布宝塚.csv", index=False)
             r = run(sorted(d.glob("*.csv")))
         mr = r.match_review.set_index("name_a")
         by_reason = {row["reason"]: row for _, row in r.match_review.iterrows()}
@@ -985,7 +985,7 @@ class LifeEventReviewTest(unittest.TestCase):
         # 判断材料: 連絡先と、出てくるシートが並ぶ
         row = high.iloc[0]
         self.assertTrue(row["email_a"] and row["email_b"])
-        self.assertIn("大公演", row["sheets_a"] + row["sheets_b"])
+        self.assertIn("large", row["sheets_a"] + row["sheets_b"])
         self.assertEqual(r.match_review["confidence"].tolist(), ["高", "中", "低"] + r.match_review["confidence"].tolist()[3:],
                          "同一人物らしい順に並ぶ")
 
@@ -999,7 +999,7 @@ class LifeEventReviewTest(unittest.TestCase):
             blank = ["", "", "", "", "", "", "", "", "", ""]
             row1 = ["連絡 あり", "レンラク アリ"] + blank[2:] + [2000, 0]
             row2 = ["名前 だけ", "ナマエ ダケ"] + blank[2:] + [3000, 0]
-            pd.DataFrame([row1, row2], columns=cols).to_csv(d / "2026_0404_大公演_呂布宝塚.csv", index=False)
+            pd.DataFrame([row1, row2], columns=cols).to_csv(d / "2026_0404_large_呂布宝塚.csv", index=False)
             r = run(sorted(d.glob("*.csv")))
         self.assertEqual(len(r.persons), 2)
         p = r.persons.set_index("name_kana")
@@ -1032,19 +1032,63 @@ class HandoffTablesTest(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 standardize(args)
             idx = pd.read_csv(d / "sheet_index.csv", dtype=str).fillna("").set_index("sheet")
-            self.assertEqual(idx.at["雨にじむ渤海_親睦会", "linked_sheet"], "2026_0121_小公演_雨にじむ渤海")
-            self.assertEqual(idx.at["雨にじむ渤海_事後販売", "linked_sheet"], "", "事後販売はどの公演にも紐づけない")
-            self.assertEqual(idx.at["2026_0121_小公演_雨にじむ渤海", "rows"], "4")
-            self.assertIn("Support 3,500円", idx.at["2026_0121_小公演_雨にじむ渤海", "totals"])
+            self.assertEqual(idx.at["social_雨にじむ渤海", "linked_sheet"], "2026_0121_small_雨にじむ渤海")
+            self.assertEqual(idx.at["post_雨にじむ渤海", "linked_sheet"], "", "事後販売はどの公演にも紐づけない")
+            self.assertEqual(idx.at["2026_0121_small_雨にじむ渤海", "rows"], "4")
+            self.assertIn("Support 3,500円", idx.at["2026_0121_small_雨にじむ渤海", "totals"])
             al = pd.read_csv(d / "standardized_all.csv", dtype=str).fillna("")
             self.assertEqual(len(al), 4 + 3 + 2)
             self.assertEqual(al.columns[:8].tolist(), ["sheet", "category", "event_name", "event_date", "linked_sheet",
                                                        "row_type", "source_sheet", "source_row"])
-            soc = al[al["sheet"] == "雨にじむ渤海_親睦会"]
+            soc = al[al["sheet"] == "social_雨にじむ渤海"]
             self.assertEqual(soc["source_row"].tolist(), ["2", "3", "4"], "元のシートの行番号（見出しが1行目）")
             self.assertEqual(soc["name katakana"].iloc[0], "カクウ ハナア", "ひらがなはカタカナにそろえる")
             # シートごとのCSVには、補助の列は入らない
-            raw = pd.read_csv(d / "raw" / "雨にじむ渤海_親睦会.csv")
+            raw = pd.read_csv(d / "raw" / "social_雨にじむ渤海.csv")
             self.assertNotIn("source_row", raw.columns)
             self.assertNotIn("__row", raw.columns)
             self.assertIn("顧客マスターを作る側に渡すファイル", buf.getvalue())
+
+
+class TagNamingTest(unittest.TestCase):
+    """標準のシート名: 年_月日_タグ_名前（tea / social / goods / post ...）。"""
+
+    def test_tag_first_names(self):
+        cases = {
+            "2026_0404_large_呂布宝塚": (LARGE, "呂布宝塚", date(2026, 4, 4)),
+            "2026_0121_small_雨にじむ渤海": (SMALL, "雨にじむ渤海", date(2026, 1, 21)),
+            "tea_呂布宝塚": (TEA_PARTY, "呂布宝塚", None),
+            "2026_0125_social_雨にじむ渤海": (SOCIAL, "雨にじむ渤海", date(2026, 1, 25)),
+            "social_雨にじむ渤海 (2)": (SOCIAL, "雨にじむ渤海", None),
+            "goods_呂布東京": (GOODS, "呂布東京", None),
+            "post_呂布": ("post_sale", "呂布", None),
+            "refund_ガイズ宝塚": ("refund", "ガイズ宝塚", None),
+            "roster_お礼状": (ROSTER, "お礼状", None),
+            "2026_0331_annual_誕生日企画": (ANNUAL, "誕生日企画", date(2026, 3, 31)),
+        }
+        for sheet, (cat, name, d) in cases.items():
+            info = classify_sheet(sheet)
+            self.assertEqual((info.category, info.name, info.event_date, info.error), (cat, name, d, None), sheet)
+        self.assertIsNotNone(classify_sheet("large_呂布宝塚").error, "公演は日付が必要")
+
+    def test_tea_and_social_are_treated_the_same(self):
+        """お茶会も親睦会も、同じ名前の公演（大劇場でも小公演でも）に紐づき、金額は total_cost の1列。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            a = person("架空 花子", "カクウ ハナコ", "hanako@example.com", "090-0000-0001", "100-0001")
+            cols = STD + ["Ticket", "Support"]
+            pd.DataFrame([a + [1000, 500]], columns=cols).to_csv(d / "2026_0404_large_呂布宝塚.csv", index=False)
+            pd.DataFrame([a + [1000, 500]], columns=cols).to_csv(d / "2026_0121_small_雨にじむ渤海.csv", index=False)
+            pd.DataFrame([a + [6000]], columns=STD + ["参加費"]).to_csv(d / "tea_呂布宝塚.csv", index=False)
+            pd.DataFrame([a + [5500]], columns=STD + ["金額"]).to_csv(d / "social_雨にじむ渤海.csv", index=False)
+            # 取り違え: 大公演にも親睦会、小公演にもお茶会を付けても、名前が同じなら紐づく
+            pd.DataFrame([a + [4000]], columns=STD + ["金額"]).to_csv(d / "tea_雨にじむ渤海.csv", index=False)
+            r = run(sorted(d.glob("*.csv")))
+        ev = r.events.set_index("sheet_name")
+        perf_id = ev.at["2026_0121_small_雨にじむ渤海", "event_id"]
+        self.assertEqual(ev.at["social_雨にじむ渤海", "linked_event_id"], perf_id)
+        self.assertEqual(ev.at["tea_雨にじむ渤海", "linked_event_id"], perf_id, "お茶会でも、小公演の同名の公演に紐づく")
+        self.assertEqual(ev.at["tea_呂布宝塚", "linked_event_id"], ev.at["2026_0404_large_呂布宝塚", "event_id"])
+        items = r.spending[r.spending["category"].isin([TEA_PARTY, SOCIAL])]
+        self.assertEqual(set(items["item"]), {"total_cost"}, "お茶会・親睦会の金額は total_cost の1列")
+        self.assertEqual(sorted(items["amount"]), [4000, 5500, 6000])
