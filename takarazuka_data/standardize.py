@@ -19,7 +19,8 @@ from pathlib import Path
 import pandas as pd
 
 from .classify import (
-    ANNUAL, GOODS, LARGE, ROSTER, SMALL, SOCIAL, TEA_PARTY, UNKNOWN, classify_sheet, normalize_text,
+    ANNUAL, GOODS, LARGE, POST_SALE, ROSTER, SMALL, SOCIAL, TEA_PARTY, UNKNOWN, classify_sheet, name_key,
+    normalize_text,
 )
 from .columns import (
     AMOUNT_FIELDS, EXPECTED_AMOUNTS, PERSON_FIELDS, PREFECTURES, clean_amount, clean_prefecture, is_blank,
@@ -27,10 +28,10 @@ from .columns import (
 )
 from .pipeline import _is_total_row, find_header, normalize_row, read_sheets
 
-CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS, ROSTER, "skip"]
+CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS, POST_SALE, ROSTER, "skip"]
 CATEGORY_ALIASES = {
     "大公演": LARGE, "大劇場": LARGE, "小公演": SMALL, "別箱": SMALL, "お茶会": TEA_PARTY, "親睦会": SOCIAL,
-    "グッズ": GOODS, "年間企画": ANNUAL, "企画": ANNUAL, "名簿": ROSTER,
+    "グッズ": GOODS, "事後販売": POST_SALE, "年間企画": ANNUAL, "企画": ANNUAL, "名簿": ROSTER,
     "取り込まない": "skip", "除外": "skip", "スキップ": "skip", "対象外": "skip",
 }
 
@@ -49,7 +50,7 @@ def normalize_date(v) -> str:
         return f"{int(m.group(1)):04d}{int(m.group(2)):02d}{int(m.group(3)):02d}"
     return re.sub(r"\D", "", s)
 CATEGORY_LABEL = {LARGE: "大公演", SMALL: "小公演"}
-SUFFIX_LABEL = {TEA_PARTY: "お茶会", SOCIAL: "親睦会", GOODS: "グッズ", ROSTER: "名簿"}
+SUFFIX_LABEL = {TEA_PARTY: "お茶会", SOCIAL: "親睦会", GOODS: "グッズ", ROSTER: "名簿", POST_SALE: "事後販売"}
 MAP_COLUMNS = ["source_file", "source_sheet", "category", "date", "name", "columns", "target_sheet", "rows", "totals", "note"]
 
 # 指定の列名と順番
@@ -66,6 +67,7 @@ BASE_FIELDS = [f for f in PERSON_FIELDS if f != "line_id"]
 _GUESS_WORDS = [
     (TEA_PARTY, ["お茶会", "茶会"]),
     (SOCIAL, ["親睦会"]),
+    (POST_SALE, ["事後販売"]),
     (GOODS, ["グッズ", "goods"]),
     (LARGE, ["大公演", "大劇場", "宝塚大劇場", "東京宝塚劇場", "本公演", "large"]),
     (SMALL, ["小公演", "別箱", "小劇場", "バウ", "梅田", "ドラマシティ", "全国ツアー", "博多座", "御園座",
@@ -417,7 +419,34 @@ def main(argv=None):
         _, mapping = find_header(df)
         g = guess(str(sheet_name), file_name, set(mapping.values()))
         added.append({"source_file": file_name, "source_sheet": str(sheet_name), **g})
+    inherited = 0
     if added:
+        present = {(file_key(f), str(s)) for s, _, f in sheets}
+        orphans_idx = [i for i, o in smap.iterrows()
+                       if (file_key(o["source_file"]), o["source_sheet"]) not in present
+                       and normalize_category(o["category"]) not in ("skip", "")]
+        used = set()
+        for a in added:
+            cat_a = normalize_category(a.get("category", ""))
+            if not cat_a:
+                continue
+            cands = []
+            for i in orphans_idx:
+                o = smap.loc[i]
+                if i in used or normalize_category(o["category"]) != cat_a:
+                    continue
+                if name_key(o["name"]) != name_key(a.get("name", "")):
+                    continue
+                if cat_a in (LARGE, SMALL, ANNUAL) and normalize_date(o["date"]) != normalize_date(a.get("date", "")):
+                    continue
+                cands.append(i)
+            if len(cands) == 1:  # 種別・名前（・日付）が同じ古い行が1つだけなら、同じシートの名前変更とみなす
+                used.add(cands[0])
+                if str(smap.loc[cands[0], "columns"]).strip():
+                    a["columns"] = smap.loc[cands[0], "columns"]
+                a["note"] = "・".join(x for x in (str(a.get("note", "")), "古いシート名の設定を引き継ぎました") if x)
+                inherited += 1
+        smap = smap.drop(index=list(used))
         smap = pd.concat([smap, pd.DataFrame(added)], ignore_index=True).reindex(columns=MAP_COLUMNS).fillna("")
     smap["category"] = smap["category"].map(normalize_category)
     smap["date"] = smap["date"].map(lambda d: normalize_date(d) if str(d).strip() else "")
@@ -519,6 +548,8 @@ def main(argv=None):
             print(f"  {name}: {len(df)} 行" + (" / " + " / ".join(sums) if sums else ""))
     if added:
         print(f"新しく見つかったシート: {len(added)} 件を {map_path} に追加しました")
+    if inherited:
+        print(f"シート名を変えたシートの設定を引き継ぎました: {inherited} 件")
     if orphans:
         print(f"元のシートが見つからない行: {orphans} 件（シート名を変えたときなど）→ {map_path} の note 列を見て、不要な行は削除してください")
     if total_red:

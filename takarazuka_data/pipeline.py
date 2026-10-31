@@ -15,7 +15,7 @@ from .identity import (
     assign_customer_ids, load_decisions, load_master, review_candidates, update_master,
 )
 from .classify import (
-    ANNUAL, APPLICATION, GOODS, LARGE, ROSTER, SMALL, SOCIAL, TEA_PARTY, UNKNOWN,
+    ANNUAL, APPLICATION, GOODS, LARGE, POST_SALE, ROSTER, SMALL, SOCIAL, TEA_PARTY, UNKNOWN,
     SheetInfo, classify_sheet, name_key,
 )
 from .columns import (
@@ -25,8 +25,8 @@ from .columns import (
     split_alternatives, split_prefecture,
 )
 
-CATEGORY_PREFIX = {LARGE: "L", SMALL: "S", TEA_PARTY: "T", SOCIAL: "K", ANNUAL: "A", GOODS: "G", APPLICATION: "R", ROSTER: "M"}
-ACTUAL_CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS]  # 実績（申請の見込額は含めない）
+CATEGORY_PREFIX = {LARGE: "L", SMALL: "S", TEA_PARTY: "T", SOCIAL: "K", ANNUAL: "A", GOODS: "G", APPLICATION: "R", ROSTER: "M", POST_SALE: "P"}
+ACTUAL_CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS, POST_SALE]  # 実績（申請の見込額は含めない）
 HEADER_SCAN_ROWS = 15
 
 
@@ -356,7 +356,8 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
     key = key.where(spending["category"].isin([LARGE, SMALL]), spending["category"])
     summary = spending.assign(key=key).pivot_table(index="customer_id", columns="key", values="amount",
                                                    aggfunc="sum", fill_value=0)
-    cols = ["large_ticket", "large_support", "small_ticket", "small_support", TEA_PARTY, SOCIAL, ANNUAL, GOODS]
+    cols = ["large_ticket", "large_support", "small_ticket", "small_support", TEA_PARTY, SOCIAL, ANNUAL, GOODS,
+            POST_SALE]
     summary = summary.reindex(index=persons["customer_id"], columns=cols, fill_value=0).fillna(0).astype(int)
     summary["support_total"] = summary["large_support"] + summary["small_support"]
     summary["total"] = summary[cols].sum(axis=1)

@@ -691,3 +691,56 @@ class OrphanRowTest(unittest.TestCase):
             self.assertIn("見つかりません", m.at["331誕生日企画", "note"])
             self.assertIn("20260331_誕生日企画", m.index)
             self.assertIn("元のシートが見つからない行: 1 件", buf.getvalue())
+
+
+class PostSaleAndRenameTest(unittest.TestCase):
+    def test_sheet_name_variants(self):
+        from takarazuka_data.classify import POST_SALE
+        info = classify_sheet("2026_0125_雨にじむ渤海_親睦会")
+        self.assertEqual((info.category, info.name, info.event_date), (SOCIAL, "雨にじむ渤海", date(2026, 1, 25)))
+        info = classify_sheet("呂布_事後販売")
+        self.assertEqual((info.category, info.name), (POST_SALE, "呂布"))
+        info = classify_sheet("2026_0121_small_雨にじむ渤海")
+        self.assertEqual((info.category, info.name), (SMALL, "雨にじむ渤海"))
+
+    def test_post_sale_is_not_linked_and_has_its_own_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            a = person("架空 花子", "カクウ ハナコ", "hanako@example.com", "090-0000-0001", "100-0001")
+            pd.DataFrame([a + [1000, 0]], columns=STD + ["Ticket", "Support"]).to_csv(
+                d / "2026_0606_大公演_呂布東京.csv", index=False)
+            pd.DataFrame([a + [3000]], columns=STD + ["total_cost"]).to_csv(d / "呂布_事後販売.csv", index=False)
+            r = run(sorted(d.glob("*.csv")))
+        self.assertEqual(int(r.summary["post_sale"].iloc[0]), 3000)
+        self.assertFalse(r.review["message"].str.contains("紐づく").any(), "事後販売は公演に紐づけないので警告も出ない")
+        self.assertEqual(r.events.set_index("name").at["呂布", "linked_event_id"], "")
+
+    def test_renamed_sheet_inherits_columns_from_old_row(self):
+        import contextlib, io
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            rows = [[i, f"架空 花{chr(0x5B50 + i)}", f"カクウ ハナ{chr(0x30A2 + 2 * i)}", 1000 * (i % 3)] for i in range(1, 9)]
+            args = [str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+
+            def book(sheet):
+                with pd.ExcelWriter(orig / "管理.xlsx") as w:
+                    pd.DataFrame(rows).to_excel(w, sheet_name=sheet, header=False, index=False)
+
+            book("404呂布宝塚チケット")
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            m = load_map(d / "map.csv")
+            m.loc[0, ["category", "date", "name", "columns"]] = ["large", "20260404", "呂布宝塚", "B=名前 C=カナ D=サポート"]
+            m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            book("2026_0404_large_呂布宝塚")  # 標準の名前に変更
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                standardize(args)
+            m = load_map(d / "map.csv")
+            self.assertEqual(len(m), 1, "古い行は新しい行に置き換わる")
+            self.assertEqual(m.loc[0, "columns"], "B=名前 C=カナ D=サポート")
+            self.assertIn("引き継ぎました: 1 件", buf.getvalue())
+            out = pd.read_csv(d / "raw" / "2026_0404_大公演_呂布宝塚.csv", dtype=str)
+            self.assertEqual(len(out), 8)

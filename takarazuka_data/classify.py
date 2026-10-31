@@ -8,6 +8,7 @@
     annual             : year_date_企画名
     今回のチケット申請 : year_date_種別_公演名_申請   例) 2026_1105_大公演_星の詩_申請
     名簿（連絡先のみ） : 名前_名簿                     例) 会員_名簿
+    事後販売           : 公演名_事後販売               例) 呂布_事後販売
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ ANNUAL = "annual"
 GOODS = "goods"
 APPLICATION = "application"  # 今回のチケット申請（実績ではなく見込み）
 ROSTER = "roster"  # 名簿（連絡先だけ。金額なし）
+POST_SALE = "post_sale"  # 事後販売（公演のあとのグッズ販売など。どの公演にも紐づけない）
 UNKNOWN = "unknown"
 
 # 公演種別キーワード（比較は NFKC + 小文字化後）
@@ -38,6 +40,7 @@ SUFFIXES = {
     "親睦会": (SOCIAL, SMALL),
     "グッズ": (GOODS, None),  # large/small どちらでも可
     "名簿": (ROSTER, None),  # 例) 会員_名簿
+    "事後販売": (POST_SALE, None),  # 例) 呂布_事後販売
 }
 
 _DATED = re.compile(r"^(\d{4})_(\d{4})_(.+)$")
@@ -118,6 +121,8 @@ def classify_sheet(sheet_name: str) -> SheetInfo:
                 perf = _split_performance(dated[1])
                 if perf:
                     event_date, name = dated[0], perf[1]
+                else:  # '2026_0125_雨にじむ渤海_親睦会' のように、種別なしで日付が前置されている場合
+                    event_date, name = dated[0], dated[1]
             if not name:
                 return SheetInfo(sheet_name, UNKNOWN, "", error="イベント名が空です")
             return SheetInfo(sheet_name, category, name, event_date, link_category)

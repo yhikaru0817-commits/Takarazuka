@@ -15,7 +15,7 @@
 | 列 | 内容 |
 |---|---|
 | event_id | イベントID（例 `L_20260121大公演渤海`） |
-| category | `large` / `small` / `tea_party`(お茶会) / `social`(親睦会) / `annual` / `goods` / `application`(今回の申請) |
+| category | `large` / `small` / `tea_party`(お茶会) / `social`(親睦会) / `annual` / `goods` / `post_sale`(事後販売。公演に紐づけない) / `application`(今回の申請) |
 | name | 公演名・イベント名 |
 | event_date | シート名の日付（お茶会・親睦会・グッズは空） |
 | link_category | お茶会→`large`、親睦会→`small`。application ではその公演の種別 (`large`/`small`) |
@@ -36,7 +36,7 @@
 | amount | 円（整数） |
 
 ### summary — 人ごとの合計（実績）
-`customer_id, large_ticket, large_support, small_ticket, small_support, tea_party, social, annual, goods, support_total, total`
+`customer_id, large_ticket, large_support, small_ticket, small_support, tea_party, social, annual, goods, post_sale, support_total, total`
 （全期間の合計。期間を絞る場合は `spending` を `select_events` の結果で絞って集計してください）
 
 ### ticket_history — 過去公演の申込実績

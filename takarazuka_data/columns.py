@@ -7,7 +7,7 @@ import unicodedata
 
 from datetime import date, datetime
 
-from .classify import ANNUAL, APPLICATION, GOODS, LARGE, ROSTER, SMALL, SOCIAL, TEA_PARTY, normalize_text
+from .classify import ANNUAL, APPLICATION, GOODS, LARGE, POST_SALE, ROSTER, SMALL, SOCIAL, TEA_PARTY, normalize_text
 
 PERSON_FIELDS = [
     "name_kanji",
@@ -39,6 +39,7 @@ EXPECTED_AMOUNTS = {
     SOCIAL: ["total_cost"],
     ANNUAL: ["total_cost"],
     GOODS: ["total_cost"],
+    POST_SALE: ["total_cost"],
     APPLICATION: ["support"],  # サポート代（見込額）
     ROSTER: [],  # 名簿は連絡先のみ
 }
