@@ -1094,3 +1094,39 @@ class TagNamingTest(unittest.TestCase):
         items = r.spending[r.spending["category"].isin([TEA_PARTY, SOCIAL])]
         self.assertEqual(set(items["item"]), {"total_cost"}, "お茶会・親睦会の金額は total_cost の1列")
         self.assertEqual(sorted(items["amount"]), [4000, 5500, 6000])
+
+
+class AutoCheckTest(unittest.TestCase):
+    def run_std(self, d, orig):
+        import contextlib, io
+        from takarazuka_data.standardize import main as standardize
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            standardize([str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")])
+        return buf.getvalue()
+
+    def book(self, orig, sheets):
+        names = [f"架空 花{chr(0x5B50 + i)}" for i in range(4)]
+        kanas = [f"カクウ ハナ{chr(0x30A2 + 2 * i)}" for i in range(4)]
+        with pd.ExcelWriter(orig / "管理.xlsx") as w:
+            for sheet, amount_col, amounts in sheets:
+                pd.DataFrame({"名前": names, "フリガナ": kanas, amount_col: amounts}).to_excel(
+                    w, sheet_name=sheet, index=False)
+
+    def test_clean_data_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp); orig = d / "original"; orig.mkdir()
+            self.book(orig, [("2026_0121_small_雨にじむ渤海", "サポート代", [1000, 0, 500, 0]),
+                             ("social_雨にじむ渤海", "金額", [5500] * 4)])
+            self.assertIn("✓ 自動チェック", self.run_std(d, orig))
+
+    def test_problems_are_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp); orig = d / "original"; orig.mkdir()
+            self.book(orig, [("2026_0121_small_雨にじむ渤海", "サポート代", [1000, 0, 500, 0]),
+                             ("social_ちがう名前", "金額", [5500] * 4),          # 同じ名前の公演がない
+                             ("goods_雨にじむ渤海", "金額", [0] * 4)])            # 金額が全部0円
+            out = self.run_std(d, orig)
+            self.assertIn("social_ちがう名前: 同じ名前の公演が見つかりません", out)
+            self.assertIn("goods_雨にじむ渤海: 金額の合計が0円です", out)
+            self.assertNotIn("✓ 自動チェック", out)

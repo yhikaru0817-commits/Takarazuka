@@ -366,6 +366,29 @@ def build_summary_tables(merged: dict, merged_idx: dict, smap: pd.DataFrame):
     return pd.DataFrame(index_rows, columns=cols), all_df
 
 
+def run_checks(index_df: pd.DataFrame, all_df: pd.DataFrame) -> list[str]:
+    """整形後のデータの、機械で確かめられる範囲のチェック。元のシートの合計との見比べは、人の目で行う。"""
+    out = []
+    for _, r in index_df.iterrows():
+        sheet, cat = r["sheet"], r["category"]
+        if int(r["rows"]) == 0:
+            out.append(f"{sheet}: 取り込めた行が0件です")
+            continue
+        if cat in (TEA_PARTY, SOCIAL, GOODS):
+            if not r["linked_sheet"]:
+                out.append(f"{sheet}: 同じ名前の公演が見つかりません（公演名をそろえてください）")
+            elif " / " in r["linked_sheet"]:
+                out.append(f"{sheet}: 同じ名前の公演が複数あります（{r['linked_sheet']}）")
+        if cat != ROSTER:
+            sub = all_df[all_df["sheet"] == sheet]
+            col = "Support" if cat in (LARGE, SMALL) else "total_cost"
+            if col not in sub.columns or sub[col].isna().all():
+                out.append(f"{sheet}: 金額の列（{col}）が見つかりません")
+            elif pd.to_numeric(sub[col], errors="coerce").fillna(0).sum() == 0:
+                out.append(f"{sheet}: 金額の合計が0円です（金額の列を読めていない可能性）")
+    return out
+
+
 def file_key(name) -> str:
     """ファイル名の照合用キー。ダウンロードし直して「 (1)」が付いたり消えたりしても、同じファイルとみなす。"""
     stem = unicodedata.normalize("NFKC", Path(str(name)).stem)
@@ -686,6 +709,13 @@ def main(argv=None):
         print(f"★ 記入が必要なシート: {len(todo)} 件 → {map_path} を開いて記入し、もう一度実行してください")
     if report:
         print(f"注意事項: {len(report)} 件 → {report_path}")
+    checks = run_checks(index_df, all_df)
+    if checks:
+        for m in checks:
+            print(f"  ✗ 自動チェック: {m}")
+    else:
+        print("✓ 自動チェック: 種別・紐づけ・金額に、機械で見つけられる問題はありませんでした"
+              "（元のシートの合計との見比べは、人の目で行ってください）")
     print(f"確認用: {view}")
     print(f"顧客マスターを作る側に渡すファイル: {map_path.parent / 'standardized_all.csv'}（全シートを1つにした表）/ "
           f"{map_path.parent / 'sheet_index.csv'}（シートの一覧）/ {dst}/（シートごとのCSV）")
