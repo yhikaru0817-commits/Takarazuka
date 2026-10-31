@@ -860,3 +860,20 @@ class StaleOutputTest(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 standardize(args)
             self.assertEqual([p.name for p in raw.glob("*.csv")], ["2026_0401_誕生日.csv"], "前回の出力は残らない")
+
+
+class PerUnitHeaderTest(unittest.TestCase):
+    def test_per_ticket_columns_are_not_read_as_totals(self):
+        for h in ("一人あたりサポート代", "1枚あたりサポート代", "サポート代(一人当たり)", "チケット単価"):
+            self.assertIsNone(map_header(h), h)
+        self.assertEqual(map_header("サポート代"), "support")
+        self.assertEqual(map_header("合計金額"), "total_cost")
+
+    def test_column_order_does_not_matter_with_header_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            pd.DataFrame({"サポート代": [1000, 2000], "一人あたりサポート代": [500, 1000], "メール": ["a@example.com", "b@example.com"],
+                          "フリガナ": ["カクウ ハナコ", "シケン タロウ"], "備考": ["", ""], "名前": ["架空 花子", "試験 太郎"],
+                          "枚数": [2, 2]}).to_csv(d / "2026_0606_大公演_呂布東京.csv", index=False)
+            r = run([d / "2026_0606_大公演_呂布東京.csv"])
+        self.assertEqual(sorted(r.spending.loc[r.spending["item"] == "support", "amount"].tolist()), [1000, 2000])

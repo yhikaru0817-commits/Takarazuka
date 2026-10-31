@@ -82,7 +82,18 @@ def header_key(h) -> str:
 ALIAS_TO_FIELD = {header_key(a): f for f, aliases in _ALIASES.items() for a in aliases}
 
 
+_PER_UNIT = re.compile(r"あたり|当たり|単価|平均|1枚|一枚|一人|1人")
+
+
 def map_header(h, contains: bool = True) -> str | None:
+    """列名から項目を判定する。「一人あたりサポート代」「1枚あたり」など、合計でない金額の列は読まない。"""
+    field = _map_header_raw(h, contains)
+    if field in AMOUNT_FIELDS and _PER_UNIT.search(unicodedata.normalize("NFKC", str(h))):
+        return None
+    return field
+
+
+def _map_header_raw(h, contains: bool = True) -> str | None:
     if h is None or (isinstance(h, float) and math.isnan(h)):
         return None
     key = header_key(h)
