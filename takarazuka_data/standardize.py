@@ -25,10 +25,10 @@ from .classify import (
     normalize_text,
 )
 from .columns import (
-    AMOUNT_FIELDS, EXPECTED_AMOUNTS, PERSON_FIELDS, PREFECTURES, clean_amount, clean_prefecture, is_blank,
-    load_aliases, map_header,
+    ADDRESS_FIELDS, AMOUNT_FIELDS, EXPECTED_AMOUNTS, MULTI_FIELDS, PERSON_FIELDS, PREFECTURES, clean_amount,
+    clean_prefecture, is_blank, join_address, load_aliases, map_header,
 )
-from .pipeline import _is_total_row, find_header, normalize_row, read_sheets
+from .pipeline import _is_total_row, column_ranks, find_header, gather_raw, normalize_row, read_sheets
 
 CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS, POST_SALE, REFUND, ROSTER, "skip"]
 CATEGORY_ALIASES = {
@@ -386,10 +386,11 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "", sk
         (["line_id"] if "line_id" in set(mapping.values()) else [])
 
     out = []
+    ranks = column_ranks(df, header_row, mapping)
     for i in range(header_row + 1, len(df)):
         if header_row == -1 and sum(1 for v in df.iloc[i] if map_header(v, contains=False)) >= 2:
             continue  # 列の指定を使うとき、途中にある列名の行は飛ばす
-        raw = {f: df.iat[i, df.columns.get_loc(c)] for c, f in mapping.items()}
+        raw = gather_raw(df, i, mapping, ranks)  # 複数の列に分かれた住所は、市区町村 → 町名 → 番地の順につなぐ
         if all(is_blank(raw.get(f)) for f in PERSON_FIELDS) or _is_total_row(raw):
             continue
         if i in skip_rows and not (is_blank(raw.get("name_kanji")) and is_blank(raw.get("name_kana"))):

@@ -25,7 +25,8 @@ PERSON_FIELDS = [
 AMOUNT_FIELDS = ["ticket", "support", "entry_fee", "total_cost"]
 # 公演・申請シートで任意に使える列
 TICKET_FIELDS = ["seat_type", "quantity", "show_date", "show_time", "alt_dates"]
-MULTI_FIELDS = {"alt_dates"}  # 複数列（振替1, 振替2 ...）をまとめて受け取る
+MULTI_FIELDS = {"alt_dates", "address1", "address2"}  # 複数列をまとめて受け取る（振替1・振替2 / 市区町村・町名番地 ...）
+ADDRESS_FIELDS = ("address1", "address2")
 
 # 席種: large は SS/S/A/B、small は S のみ。申請時は席種未確定のため SS（small は S）で受け付ける
 SEAT_TYPES = {LARGE: ["SS", "S", "A", "B"], SMALL: ["S"]}
@@ -55,8 +56,10 @@ _ALIASES = {
     "phone": ["phonenumber", "phone", "tel", "telephone", "電話", "電話番号", "携帯", "携帯番号", "連絡先"],
     "postal_code": ["postnumber", "postcode", "postalcode", "zip", "zipcode", "郵便番号", "〒"],
     "prefecture": ["prefecture", "pref", "都道府県", "県"],
-    "address1": ["address1", "address", "住所1", "住所", "市区町村", "住所(市区町村)"],
-    "address2": ["address2", "住所2", "建物名", "番地以降", "住所(建物名)"],
+    "address1": ["address1", "address", "住所1", "住所", "ご住所", "市区町村", "住所(市区町村)", "町名番地", "町名",
+                 "番地", "丁目", "丁目番地", "住所(町名番地)", "住所(番地)"],
+    "address2": ["address2", "住所2", "建物名", "建物", "番地以降", "住所(建物名)", "マンション名", "マンション",
+                 "ビル名", "アパート名", "部屋番号"],
     "line_id": ["lineid", "lineuserid", "lineユーザーid", "userid", "ラインid", "lineアカウントid"],
     "ticket": ["ticket", "チケット", "チケット代", "チケット金額", "チケット代金"],
     "support": ["support", "応援", "応援金", "応援費", "サポート", "サポート代", "サポート代(見込額)", "サポート見込額",
@@ -168,6 +171,29 @@ def clean_text(v) -> str:
 
 def to_katakana(s: str) -> str:
     return "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in s)
+
+
+def address_rank(header) -> int:
+    """住所の部品の並び順。列の位置に関係なく、住所全体 → 市区町村 → 町名 → 丁目 → 番地 → 建物 の順につなぐ。"""
+    h = unicodedata.normalize("NFKC", str(header))
+    for word, rank in (("市区町村", 1), ("町名", 2), ("丁目", 3), ("番地", 4), ("建物", 5), ("マンション", 5),
+                       ("ビル", 5), ("アパート", 5), ("部屋", 5)):
+        if word in h:
+            return rank
+    return 0
+
+
+def join_address(parts) -> str:
+    """複数の列に分かれた住所を、左の列から順に（区切りなしで）つなぐ。同じ文字がすでに入っている列は重ねない。"""
+    if not isinstance(parts, (list, tuple)):
+        return clean_text(parts)
+    out = ""
+    for p in parts:
+        t = clean_text(p).replace(" ", "")
+        if not t or t in out:
+            continue
+        out = t if out and out in t else out + t
+    return out
 
 
 def clean_kana(v) -> str:

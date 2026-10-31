@@ -877,3 +877,44 @@ class PerUnitHeaderTest(unittest.TestCase):
                           "枚数": [2, 2]}).to_csv(d / "2026_0606_大公演_呂布東京.csv", index=False)
             r = run([d / "2026_0606_大公演_呂布東京.csv"])
         self.assertEqual(sorted(r.spending.loc[r.spending["item"] == "support", "amount"].tolist()), [1000, 2000])
+
+
+class SplitAddressTest(unittest.TestCase):
+    def test_address_columns_are_joined(self):
+        import contextlib, io
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            names = [f"架空 花{chr(0x5B50 + i)}" for i in range(4)]
+            kanas = [f"カクウ ハナ{chr(0x30A2 + 2 * i)}" for i in range(4)]
+            with pd.ExcelWriter(orig / "管理.xlsx") as w:
+                # 都道府県・市区町村・町名番地・建物名に分かれている（列の順番もバラバラ）
+                pd.DataFrame({"建物名": ["サンライズ202", "", "", ""], "名前": names, "フリガナ": kanas,
+                              "町名番地": ["旭町2-3-15", "中央1-2-3", "東町4-5", "西町6-7"],
+                              "都道府県": ["兵庫県"] * 4, "市区町村": ["宝塚市", "宝塚市", "川西市", "伊丹市"],
+                              "合計金額": [1000] * 4}).to_excel(w, sheet_name="分割A", index=False)
+                # 住所（全部入り）と都道府県が重なっている・住所と市区町村が重なっている
+                pd.DataFrame({"名前": names, "フリガナ": kanas, "都道府県": ["兵庫県"] * 4,
+                              "住所": ["兵庫県宝塚市旭町2-3-15", "兵庫県宝塚市中央1-2-3", "兵庫県川西市東町4-5", "兵庫県伊丹市西町6-7"],
+                              "合計金額": [1000] * 4}).to_excel(w, sheet_name="全部入りB", index=False)
+                # 列名なし: 列の指定で、同じ名前の列を複数指定する
+                pd.DataFrame([[names[i], kanas[i], "兵庫県", "宝塚市", f"旭町{i}-3-15", f"ハイツ{i}", 1000] for i in range(4)]
+                             ).to_excel(w, sheet_name="指定C", header=False, index=False)
+            args = [str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            m = load_map(d / "map.csv").set_index("source_sheet")
+            for sheet, nm in (("分割A", "甲"), ("全部入りB", "乙"), ("指定C", "丙")):
+                m.loc[sheet, ["category", "name"]] = ["goods", nm]
+            m.loc["指定C", "columns"] = "A=名前 B=カナ C=都道府県 D=住所1 E=住所1 F=住所2 G=合計"
+            m.reset_index().to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            a = pd.read_csv(d / "raw" / "甲_グッズ.csv", dtype=str).fillna("")
+            self.assertEqual(a["prefecture"][0] + a["address 1"][0] + a["address 2"][0], "兵庫県宝塚市旭町2-3-15サンライズ202")
+            self.assertEqual(a["address 1"][2], "川西市東町4-5")
+            b = pd.read_csv(d / "raw" / "乙_グッズ.csv", dtype=str).fillna("")
+            self.assertEqual(b["address 1"][0], "宝塚市旭町2-3-15", "都道府県が重ならない")
+            c = pd.read_csv(d / "raw" / "丙_グッズ.csv", dtype=str).fillna("")
+            self.assertEqual((c["address 1"][1], c["address 2"][1]), ("宝塚市旭町1-3-15", "ハイツ1"))

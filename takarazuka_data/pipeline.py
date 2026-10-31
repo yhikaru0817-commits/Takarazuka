@@ -19,7 +19,8 @@ from .classify import (
     SheetInfo, classify_sheet, name_key,
 )
 from .columns import (
-    AMOUNT_FIELDS, EXPECTED_AMOUNTS, MULTI_FIELDS, PERSON_FIELDS, TICKET_FIELDS,
+    ADDRESS_FIELDS, AMOUNT_FIELDS, EXPECTED_AMOUNTS, MULTI_FIELDS, PERSON_FIELDS, TICKET_FIELDS, address_rank,
+    join_address,
     clean_amount, clean_email, clean_kana, clean_phone, clean_postal, clean_prefecture,
     clean_quantity, clean_seat, clean_text, clean_time, is_blank, map_header, parse_show,
     split_alternatives, split_prefecture,
@@ -67,6 +68,30 @@ def read_sheets(paths: list[Path]):
             yield p.stem, df, p.name
 
 
+def column_ranks(df: pd.DataFrame, header_row, mapping: dict) -> dict:
+    """住所の列ごとの並び順（列名から判断）。列の指定（列名の行なし）のときは、指定した順。"""
+    if header_row is None or header_row < 0:
+        return {}
+    return {c: address_rank(df.iat[header_row, df.columns.get_loc(c)]) for c, f in mapping.items() if f in ADDRESS_FIELDS}
+
+
+def gather_raw(df: pd.DataFrame, i: int, mapping: dict, ranks: dict) -> dict:
+    """1行を {項目: 値} にする。複数の列に分かれた項目（住所・振替日程）は、まとめて受け取る。"""
+    raw, addr = {}, {f: [] for f in ADDRESS_FIELDS}
+    for c, f in mapping.items():
+        v = df.iat[i, df.columns.get_loc(c)]
+        if f in ADDRESS_FIELDS:
+            addr[f].append((ranks.get(c, 0), len(addr[f]), v))
+        elif f in MULTI_FIELDS:
+            raw.setdefault(f, []).append(v)
+        else:
+            raw[f] = v
+    for f, parts in addr.items():
+        if parts:
+            raw[f] = join_address([v for _, _, v in sorted(parts, key=lambda t: (t[0], t[1]))])
+    return raw
+
+
 def find_header(df: pd.DataFrame):
     """タイトル行などがあっても、列名に最も多く一致する行をヘッダとみなす。"""
     best_row, best_map = None, {}
@@ -107,6 +132,8 @@ def normalize_row(raw: dict, issue) -> dict:
         rec["name_kanji"] = f"{rec['family_name']} {rec['first_name']}".strip()
     if not rec["prefecture"] and rec["address1"]:
         rec["prefecture"], rec["address1"] = split_prefecture(rec["address1"])
+    elif rec["prefecture"] and rec["address1"].startswith(rec["prefecture"]):  # 住所に都道府県が重ねて入っている場合
+        rec["address1"] = rec["address1"][len(rec["prefecture"]):].strip()
     if rec["email"] and "@" not in rec["email"]:
         issue("warning", "メールアドレスの形式が不正です")
     for f in AMOUNT_FIELDS:
@@ -278,14 +305,9 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
         if unmapped:
             sheet_issue("info", f"未対応の列を無視しました: {', '.join(unmapped)}")
 
+        ranks = column_ranks(df, header_row, mapping)
         for i in range(header_row + 1, len(df)):
-            raw = {}
-            for c, f in mapping.items():
-                v = df.iat[i, df.columns.get_loc(c)]
-                if f in MULTI_FIELDS:
-                    raw.setdefault(f, []).append(v)
-                else:
-                    raw[f] = v
+            raw = gather_raw(df, i, mapping, ranks)
             if all(is_blank(raw.get(f)) for f in PERSON_FIELDS) or _is_total_row(raw):
                 continue
             row_issue = issue_for(sheet_name, i + 1)  # Excel の行番号
