@@ -33,7 +33,7 @@ from .pipeline import _is_total_row, column_ranks, find_header, gather_raw, norm
 CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS, POST_SALE, REFUND, ROSTER, "skip"]
 CATEGORY_ALIASES = {
     "大公演": LARGE, "大劇場": LARGE, "小公演": SMALL, "別箱": SMALL, "お茶会": TEA_PARTY, "親睦会": SOCIAL,
-    "tea_party": TEA_PARTY, "post": POST_SALE,  # 以前の名前
+    "tea_party": TEA_PARTY, "post": POST_SALE, "post_sale": POST_SALE,  # 以前の名前
     "グッズ": GOODS, "事後販売": POST_SALE, "返金": REFUND, "年間企画": ANNUAL, "企画": ANNUAL, "名簿": ROSTER,
     "取り込まない": "skip", "除外": "skip", "スキップ": "skip", "対象外": "skip",
 }
@@ -157,7 +157,7 @@ def target_sheet(category: str, date: str, name: str) -> str:
         return f"{date[:4]}_{date[4:8]}_{category}_{name}" if len(date) == 8 and name else ""
     if category == REFUND:  # 返金は、同じ名前のグッズにマイナスの金額として加える
         return f"goods_{name}" if name else ""
-    tag = {TEA_PARTY: "tea", SOCIAL: "social", GOODS: "goods", POST_SALE: "post", ROSTER: "roster"}.get(category)
+    tag = {TEA_PARTY: "tea", SOCIAL: "social", GOODS: "goods", POST_SALE: "post_goods", ROSTER: "roster"}.get(category)
     return f"{tag}_{name}" if tag and name else ""  # タグ_名前（日付は付けない。同じイベントのシートを1つにまとめるため）
 
 

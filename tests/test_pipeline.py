@@ -711,7 +711,7 @@ class PostSaleAndRenameTest(unittest.TestCase):
                 d / "2026_0606_large_呂布東京.csv", index=False)
             pd.DataFrame([a + [3000]], columns=STD + ["total_cost"]).to_csv(d / "呂布_事後販売.csv", index=False)
             r = run(sorted(d.glob("*.csv")))
-        self.assertEqual(int(r.summary["post_sale"].iloc[0]), 3000)
+        self.assertEqual(int(r.summary["post_goods"].iloc[0]), 3000)
         self.assertFalse(r.review["message"].str.contains("紐づく").any(), "事後販売は公演に紐づけないので警告も出ない")
         self.assertEqual(r.events.set_index("name").at["呂布", "linked_event_id"], "")
 
@@ -1033,7 +1033,7 @@ class HandoffTablesTest(unittest.TestCase):
                 standardize(args)
             idx = pd.read_csv(d / "sheet_index.csv", dtype=str).fillna("").set_index("sheet")
             self.assertEqual(idx.at["social_雨にじむ渤海", "linked_sheet"], "2026_0121_small_雨にじむ渤海")
-            self.assertEqual(idx.at["post_雨にじむ渤海", "linked_sheet"], "", "事後販売はどの公演にも紐づけない")
+            self.assertEqual(idx.at["post_goods_雨にじむ渤海", "linked_sheet"], "", "事後販売はどの公演にも紐づけない")
             self.assertEqual(idx.at["2026_0121_small_雨にじむ渤海", "rows"], "4")
             self.assertIn("Support 3,500円", idx.at["2026_0121_small_雨にじむ渤海", "totals"])
             al = pd.read_csv(d / "standardized_all.csv", dtype=str).fillna("")
@@ -1061,7 +1061,9 @@ class TagNamingTest(unittest.TestCase):
             "2026_0125_social_雨にじむ渤海": (SOCIAL, "雨にじむ渤海", date(2026, 1, 25)),
             "social_雨にじむ渤海 (2)": (SOCIAL, "雨にじむ渤海", None),
             "goods_呂布東京": (GOODS, "呂布東京", None),
-            "post_呂布": ("post_sale", "呂布", None),
+            "post_goods_呂布": ("post_goods", "呂布", None),
+            "post_呂布": ("post_goods", "呂布", None),        # 短い形も可
+            "呂布_事後販売": ("post_goods", "呂布", None),    # 従来の形も可
             "refund_ガイズ宝塚": ("refund", "ガイズ宝塚", None),
             "roster_お礼状": (ROSTER, "お礼状", None),
             "2026_0331_annual_誕生日企画": (ANNUAL, "誕生日企画", date(2026, 3, 31)),

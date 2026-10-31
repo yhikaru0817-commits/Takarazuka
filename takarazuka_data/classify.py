@@ -6,7 +6,7 @@
     tea     お茶会               tea_呂布宝塚          （同じ名前の公演に紐づく）
     social  親睦会               2026_0125_social_雨にじむ渤海
     goods   グッズ               goods_呂布東京
-    post    事後販売             post_呂布             （どの公演にも紐づけない）
+    post_goods 事後販売          post_goods_呂布       （どの公演にも紐づけない。post_呂布 も可）
     refund  返金                 refund_ガイズ宝塚      （マイナスの金額として同じ名前のグッズに加える）
     roster  名簿（連絡先のみ）   roster_お礼状
     annual  年間企画             2026_0331_annual_誕生日企画   （タグなしの 2026_0331_誕生日企画 も可）
@@ -28,7 +28,7 @@ ANNUAL = "annual"
 GOODS = "goods"
 APPLICATION = "application"  # 今回のチケット申請（実績ではなく見込み）
 ROSTER = "roster"  # 名簿（連絡先だけ。金額なし）
-POST_SALE = "post_sale"  # 事後販売（公演のあとのグッズ販売など。どの公演にも紐づけない）
+POST_SALE = "post_goods"  # 事後販売（公演のあとのグッズ販売など。どの公演にも紐づけない）
 REFUND = "refund"  # 返金（取り込み時にマイナスの金額として、同じ公演名のグッズに加える）
 UNKNOWN = "unknown"
 
@@ -56,12 +56,14 @@ TAGS = {
     "tea": TEA_PARTY, "お茶会": TEA_PARTY,
     "social": SOCIAL, "親睦会": SOCIAL,
     "goods": GOODS, "グッズ": GOODS,
-    "post": POST_SALE, "事後販売": POST_SALE,
+    "post_goods": POST_SALE, "post": POST_SALE, "post_sale": POST_SALE, "事後販売": POST_SALE,
     "refund": REFUND, "返金": REFUND,
     "roster": ROSTER, "名簿": ROSTER,
     "annual": ANNUAL, "年間企画": ANNUAL,
 }
-_TAGGED = re.compile(r"^(?:(\d{4})_(\d{4})_)?([^_]+)_(.+)$")
+# タグの中に _ があっても（post_goods）、1つのタグとして読む（長いタグから順に照合）
+_TAG_ALT = "|".join(re.escape(t) for t in sorted(TAGS, key=len, reverse=True))
+_TAGGED = re.compile(rf"^(?:(\d{{4}})_(\d{{4}})_)?({_TAG_ALT})_(.+)$", re.IGNORECASE)
 _NEEDS_DATE = (LARGE, SMALL, ANNUAL)
 
 
