@@ -648,7 +648,7 @@ class RedRowAndHubTest(unittest.TestCase):
             out = pd.read_csv(d / "raw" / "2026_0606_large_呂布東京.csv", dtype=str)
             self.assertEqual(len(out), 5)
             self.assertNotIn("3000", out["Support"].tolist())
-            self.assertEqual(load_map(d / "map.csv").loc[0, "totals"], "Ticket 0円 / Support 18,000円 / 赤い行を除外 1行")
+            self.assertEqual(load_map(d / "map.csv").loc[0, "totals"], "Support 18,000円 / 赤い行を除外 1行")
             with contextlib.redirect_stdout(io.StringIO()):
                 standardize(args + ["--include-red"])
             self.assertEqual(len(pd.read_csv(d / "raw" / "2026_0606_large_呂布東京.csv")), 6)
@@ -1130,3 +1130,33 @@ class AutoCheckTest(unittest.TestCase):
             self.assertIn("social_ちがう名前: 同じ名前の公演が見つかりません", out)
             self.assertIn("goods_雨にじむ渤海: 金額の合計が0円です", out)
             self.assertNotIn("✓ 自動チェック", out)
+
+
+class MissingAmountColumnTest(unittest.TestCase):
+    def test_missing_ticket_column_is_blank_not_zero(self):
+        import contextlib, io
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            names = [f"架空 花{chr(0x5B50 + i)}" for i in range(3)]
+            kanas = [f"カクウ ハナ{chr(0x30A2 + 2 * i)}" for i in range(3)]
+            with pd.ExcelWriter(orig / "管理.xlsx") as w:
+                pd.DataFrame({"名前": names, "フリガナ": kanas, "サポート代": [1000, 2000, 500]}
+                             ).to_excel(w, sheet_name="2026_0121_small_雨にじむ渤海", index=False)
+                pd.DataFrame({"名前": names, "フリガナ": kanas, "サポート代": [1000, 2000, 500], "チケット代": [5500] * 3}
+                             ).to_excel(w, sheet_name="2026_0404_large_呂布宝塚", index=False)
+            args = [str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                standardize(args)
+            a = pd.read_csv(d / "raw" / "2026_0121_small_雨にじむ渤海.csv", dtype=str)
+            self.assertTrue(a["Ticket"].isna().all(), "チケット代の列がないシートは、0ではなく空欄")
+            self.assertEqual(a["Support"].tolist(), ["1000", "2000", "500"], "ほかの金額は整数のまま（.0 が付かない）")
+            b = pd.read_csv(d / "raw" / "2026_0404_large_呂布宝塚.csv", dtype=str)
+            self.assertEqual(b["Ticket"].tolist(), ["5500"] * 3)
+            m = load_map(d / "map.csv").set_index("source_sheet")
+            self.assertEqual(m.at["2026_0121_small_雨にじむ渤海", "totals"], "Support 3,500円")
+            self.assertEqual(m.at["2026_0404_large_呂布宝塚", "totals"], "Ticket 16,500円 / Support 3,500円")
+            report = pd.read_csv(d / "standardize_report.csv", dtype=str).fillna("")
+            self.assertFalse(report["message"].str.contains("Ticket が見つかりません").any(), "チケット代がなくても警告しない")

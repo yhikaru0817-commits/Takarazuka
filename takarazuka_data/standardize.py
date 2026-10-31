@@ -343,9 +343,8 @@ def build_summary_tables(merged: dict, merged_idx: dict, smap: pd.DataFrame):
     index_rows, parts_all = [], []
     for target, parts in sorted(merged.items()):
         m = meta[target]
-        df = pd.concat(parts, ignore_index=True)
-        sums = [f"{col} {int(pd.to_numeric(df[col], errors='coerce').fillna(0).sum()):,}円"
-                for col in ("Ticket", "Support", "Entry_fee", "total_cost") if col in df.columns]
+        df = fix_amount_dtypes(pd.concat(parts, ignore_index=True))
+        sums = amount_summary(df)
         sources = sorted({str(smap.at[i, "source_sheet"]) for i in m["idxs"]})
         index_rows.append({"sheet": target, "category": m["category"], "event_name": m["name"], "event_date": m["date"],
                            "linked_sheet": linked(m), "rows": len(df), "totals": " / ".join(sums),
@@ -362,8 +361,27 @@ def build_summary_tables(merged: dict, merged_idx: dict, smap: pd.DataFrame):
             p.insert(0, "sheet", target)
             parts_all.append(p)
     cols = ["sheet", "category", "event_name", "event_date", "linked_sheet", "rows", "totals", "source_sheets"]
-    all_df = pd.concat(parts_all, ignore_index=True) if parts_all else pd.DataFrame()
+    all_df = fix_amount_dtypes(pd.concat(parts_all, ignore_index=True)) if parts_all else pd.DataFrame()
     return pd.DataFrame(index_rows, columns=cols), all_df
+
+
+def amount_summary(df: pd.DataFrame) -> list[str]:
+    """金額の列ごとの合計。元のシートにない列（値が空）は出さない（0円と取り違えないため）。"""
+    out = []
+    for col in ("Ticket", "Support", "total_cost"):
+        if col in df.columns:
+            v = pd.to_numeric(df[col], errors="coerce")
+            if v.notna().any():
+                out.append(f"{col} {int(v.fillna(0).sum()):,}円")
+    return out
+
+
+def fix_amount_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """金額の列を整数にそろえる（元のシートにない列は空欄のまま。0 や 123.0 にしない）。"""
+    for col in ("Ticket", "Support", "total_cost"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+    return df
 
 
 def run_checks(index_df: pd.DataFrame, all_df: pd.DataFrame) -> list[str]:
@@ -382,9 +400,10 @@ def run_checks(index_df: pd.DataFrame, all_df: pd.DataFrame) -> list[str]:
         if cat != ROSTER:
             sub = all_df[all_df["sheet"] == sheet]
             col = "Support" if cat in (LARGE, SMALL) else "total_cost"
-            if col not in sub.columns or sub[col].isna().all():
+            vals = pd.to_numeric(sub[col], errors="coerce") if col in sub.columns else pd.Series(dtype=float)
+            if vals.isna().all():
                 out.append(f"{sheet}: 金額の列（{col}）が見つかりません")
-            elif pd.to_numeric(sub[col], errors="coerce").fillna(0).sum() == 0:
+            elif vals.fillna(0).sum() == 0:
                 out.append(f"{sheet}: 金額の合計が0円です（金額の列を読めていない可能性）")
     return out
 
@@ -456,8 +475,9 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "", sk
             if alt and len(amounts) == 1:
                 mapping = {c: (f if v == alt else v) for c, v in mapping.items()}
                 issue(f"金額列 {alt} を {OUTPUT_HEADERS[f]} として扱いました")
-            else:
+            elif f != "ticket":  # チケット代は任意（なくても警告しない）
                 issue(f"金額列 {OUTPUT_HEADERS[f]} が見つかりません")
+    present = set(mapping.values())  # 別名の列で代用したあとの対応
     optional = [f for f in OPTIONAL_HEADERS if f in set(mapping.values())] if category in (LARGE, SMALL) else \
         (["line_id"] if "line_id" in set(mapping.values()) else [])
 
@@ -480,7 +500,7 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "", sk
         row = {OUTPUT_HEADERS[f]: rec[f] for f in BASE_FIELDS}
         row["__row"] = i + 1  # 元のシートの行番号
         for f in amounts:
-            row[OUTPUT_HEADERS[f]] = -abs(rec[f]) if category == REFUND else rec[f]
+            row[OUTPUT_HEADERS[f]] = (-abs(rec[f]) if category == REFUND else rec[f]) if f in present else None
         for f in optional:
             v = raw.get(f)
             if f == "quantity":
@@ -612,8 +632,7 @@ def main(argv=None):
         if out is None:
             continue
         smap.at[idx, "rows"] = str(len(out))
-        tot = [f"{col} {int(pd.to_numeric(out[col], errors='coerce').fillna(0).sum()):,}円"
-               for col in ("Ticket", "Support", "Entry_fee", "total_cost") if col in out.columns]
+        tot = amount_summary(out)
         if stats.get("red"):
             tot.append(f"赤い行を除外 {stats['red']}行")
             total_red += stats["red"]
@@ -658,7 +677,7 @@ def main(argv=None):
     view = map_path.parent / "standardized.xlsx"
     with pd.ExcelWriter(view) as w:
         for name, parts in sorted(merged.items()):
-            df = pd.concat(parts, ignore_index=True).drop(columns="__row")  # 同じ公演が複数シートに分かれていたら結合
+            df = fix_amount_dtypes(pd.concat(parts, ignore_index=True).drop(columns="__row"))  # 同じ公演が複数シートに分かれていたら結合
             df.to_csv(dst / f"{name}.csv", index=False, encoding="utf-8-sig")
             written_names.append(f"{name}.csv")
             title = unicodedata.normalize("NFKC", name)[:31]
@@ -683,8 +702,7 @@ def main(argv=None):
         print("シートごとの行数と金額の合計（元のシートの合計と見比べてください）:")
         for name, parts in sorted(merged.items()):
             df = pd.concat(parts, ignore_index=True)
-            sums = [f"{col} {int(pd.to_numeric(df[col], errors='coerce').fillna(0).sum()):,}円"
-                    for col in ("Ticket", "Support", "Entry_fee", "total_cost") if col in df.columns]
+            sums = amount_summary(df)
             print(f"  {name}: {len(df)} 行" + (" / " + " / ".join(sums) if sums else ""))
     if added:
         print(f"新しく見つかったシート: {len(added)} 件を {map_path} に追加しました")
