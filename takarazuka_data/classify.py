@@ -26,6 +26,7 @@ GOODS = "goods"
 APPLICATION = "application"  # 今回のチケット申請（実績ではなく見込み）
 ROSTER = "roster"  # 名簿（連絡先だけ。金額なし）
 POST_SALE = "post_sale"  # 事後販売（公演のあとのグッズ販売など。どの公演にも紐づけない）
+REFUND = "refund"  # 返金（取り込み時にマイナスの金額として、同じ公演名のグッズに加える）
 UNKNOWN = "unknown"
 
 # 公演種別キーワード（比較は NFKC + 小文字化後）

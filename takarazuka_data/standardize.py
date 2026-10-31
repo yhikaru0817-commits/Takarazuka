@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
+from datetime import datetime
 import unicodedata
 from pathlib import Path
 
 import pandas as pd
 
 from .classify import (
-    ANNUAL, GOODS, LARGE, POST_SALE, ROSTER, SMALL, SOCIAL, TEA_PARTY, UNKNOWN, classify_sheet, name_key,
+    ANNUAL, GOODS, LARGE, POST_SALE, REFUND, ROSTER, SMALL, SOCIAL, TEA_PARTY, UNKNOWN, classify_sheet, name_key,
     normalize_text,
 )
 from .columns import (
@@ -28,10 +30,10 @@ from .columns import (
 )
 from .pipeline import _is_total_row, find_header, normalize_row, read_sheets
 
-CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS, POST_SALE, ROSTER, "skip"]
+CATEGORIES = [LARGE, SMALL, TEA_PARTY, SOCIAL, ANNUAL, GOODS, POST_SALE, REFUND, ROSTER, "skip"]
 CATEGORY_ALIASES = {
     "大公演": LARGE, "大劇場": LARGE, "小公演": SMALL, "別箱": SMALL, "お茶会": TEA_PARTY, "親睦会": SOCIAL,
-    "グッズ": GOODS, "事後販売": POST_SALE, "年間企画": ANNUAL, "企画": ANNUAL, "名簿": ROSTER,
+    "グッズ": GOODS, "事後販売": POST_SALE, "返金": REFUND, "年間企画": ANNUAL, "企画": ANNUAL, "名簿": ROSTER,
     "取り込まない": "skip", "除外": "skip", "スキップ": "skip", "対象外": "skip",
 }
 
@@ -65,6 +67,7 @@ BASE_FIELDS = [f for f in PERSON_FIELDS if f != "line_id"]
 
 # 種別の推測に使う語（シート名・ファイル名から）
 _GUESS_WORDS = [
+    (REFUND, ["返金"]),
     (TEA_PARTY, ["お茶会", "茶会"]),
     (SOCIAL, ["親睦会"]),
     (POST_SALE, ["事後販売"]),
@@ -151,6 +154,8 @@ def target_sheet(category: str, date: str, name: str) -> str:
     name = normalize_text(name).replace("_", " ")
     if category in (LARGE, SMALL):
         return f"{date[:4]}_{date[4:8]}_{CATEGORY_LABEL[category]}_{name}" if len(date) == 8 and name else ""
+    if category == REFUND:  # 返金は、同じ公演名のグッズにマイナスの金額として加える
+        return f"{name}_グッズ" if name else ""
     if category in SUFFIX_LABEL:
         return f"{name}_{SUFFIX_LABEL[category]}" if name else ""
     if category == ANNUAL:
@@ -360,6 +365,8 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "", sk
             nums = [v for v in vals if isinstance(v, (int, float)) and not isinstance(v, bool)]
             if len(vals) >= 3 and len(nums) / len(vals) >= 0.7:
                 cand.append(c)
+        if len(cand) > 1:  # 数字の列が複数あるときは、列名に「金・額・返・代・費・円」を含む列だけを候補にする
+            cand = [c for c in cand if re.search(r"金|額|返|代|費|円", str(df.iat[header_row, df.columns.get_loc(c)]))]
         if len(cand) == 1:
             head = df.iat[header_row, df.columns.get_loc(cand[0])]
             mapping = {**mapping, cand[0]: amounts[0]}
@@ -395,7 +402,7 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "", sk
             continue
         row = {OUTPUT_HEADERS[f]: rec[f] for f in BASE_FIELDS}
         for f in amounts:
-            row[OUTPUT_HEADERS[f]] = rec[f]
+            row[OUTPUT_HEADERS[f]] = -abs(rec[f]) if category == REFUND else rec[f]
         for f in optional:
             v = raw.get(f)
             if f == "quantity":
@@ -555,17 +562,34 @@ def main(argv=None):
     dst.mkdir(parents=True, exist_ok=True)
     map_path.parent.mkdir(parents=True, exist_ok=True)
     smap.to_csv(map_path, index=False, encoding="utf-8-sig")
+    # 前回までの出力を片付ける（残っていると、名前や種別を変えたシートが二重に数えられる）
+    manifest = dst / "_generated.txt"
+    if manifest.exists():
+        for old in manifest.read_text(encoding="utf-8").splitlines():
+            if old.strip():
+                (dst / old).unlink(missing_ok=True)
+    else:
+        stale = sorted(dst.glob("*.csv"))
+        if stale:  # 古い版が作ったCSV: 消さずに退避する
+            backup = dst.parent / f"raw_backup_{datetime.now():%Y%m%d_%H%M%S}"
+            backup.mkdir(parents=True, exist_ok=True)
+            for p in stale:
+                shutil.move(str(p), str(backup / p.name))
+            print(f"前回までの {len(stale)} 件のCSVを {backup} に移しました（二重に数えるのを防ぐため。不要なら削除してください）")
+    written_names = []
     view = map_path.parent / "standardized.xlsx"
     with pd.ExcelWriter(view) as w:
         for name, parts in sorted(merged.items()):
             df = pd.concat(parts, ignore_index=True)  # 同じ公演が複数シートに分かれていたら結合
             df.to_csv(dst / f"{name}.csv", index=False, encoding="utf-8-sig")
+            written_names.append(f"{name}.csv")
             title = unicodedata.normalize("NFKC", name)[:31]
             while title in w.sheets:  # Excel のシート名は31文字まで。重複したら番号を付ける
                 title = title[:28] + f"~{len(w.sheets)}"
             df.to_excel(w, sheet_name=title, index=False)
         if not merged:
             pd.DataFrame().to_excel(w, sheet_name="empty")
+    manifest.write_text("\n".join(written_names), encoding="utf-8")
     report_path = map_path.parent / "standardize_report.csv"
     pd.DataFrame(report, columns=["source_file", "source_sheet", "message"]).to_csv(
         report_path, index=False, encoding="utf-8-sig")

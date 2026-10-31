@@ -361,6 +361,9 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
     summary = summary.reindex(index=persons["customer_id"], columns=cols, fill_value=0).fillna(0).astype(int)
     summary["support_total"] = summary["large_support"] + summary["small_support"]
     summary["total"] = summary[cols].sum(axis=1)
+    negative = int((summary[cols] < 0).any(axis=1).sum())
+    if negative:  # 返金だけが取り込まれて、参加費・購入が見つからなかった人
+        global_issue("warning", f"マイナスの金額がある人が {negative} 人います（返金に対応する支払いが見つからない可能性）")
     summary = summary.reset_index().rename_axis(columns=None)
 
     # ticket_history: 過去公演の 1行 = 人 × 公演（席種・枚数は列があれば）

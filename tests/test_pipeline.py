@@ -783,3 +783,80 @@ class SplitSheetsTest(unittest.TestCase):
             self.assertIn("重なっている", m.at["雨にじむ渤海_親睦会3", "note"])
             self.assertIn("重なっている", m.at["雨にじむ渤海_親睦会", "note"])
             self.assertNotIn("重なっている", m.at["雨にじむ渤海_親睦会2", "note"])
+
+
+class RefundTest(unittest.TestCase):
+    """休演の返金: 参加費をグッズ購入として扱い、返金額を引く。"""
+
+    def test_refund_is_subtracted_from_goods(self):
+        import contextlib, io
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            names = [f"架空 花{chr(0x5B50 + i)}" for i in range(6)]
+            kanas = [f"カクウ ハナ{chr(0x30A2 + 2 * i)}" for i in range(6)]
+            with pd.ExcelWriter(orig / "管理.xlsx") as w:
+                pd.DataFrame({"お名前": names, "フリガナ": kanas, "合計": [6000] * 6,
+                              "メール": [f"u{i}@example.com" for i in range(6)]}
+                             ).to_excel(w, sheet_name="20250810_ガイズお茶飲み会", index=False)
+                # 返金シート: 返金額の列と人数の列（どちらも数字）。返金不要の1人（最後の人）は載っていない
+                pd.DataFrame({"お名前": names[:5], "口座名義人": [f"口座{i}" for i in range(5)],
+                              "8/10お茶飲み会返金": [3000] * 5, "フリガナ": kanas[:5], "お申込み人数": [1] * 5,
+                              "メールアドレス": [f"u{i}@example.com" for i in range(5)]}
+                             ).to_excel(w, sheet_name="20250810_ガイズお茶飲み会返金", index=False)
+            args = [str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            m = load_map(d / "map.csv")
+            for i, row in m.iterrows():
+                if row["source_sheet"].endswith("お茶飲み会"):
+                    m.loc[i, ["category", "name"]] = ["goods", "ガイズ宝塚"]
+                else:
+                    m.loc[i, ["category", "name"]] = ["返金", "ガイズ宝塚"]
+            m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            g = pd.read_csv(d / "raw" / "ガイズ宝塚_グッズ.csv", dtype=str)
+            self.assertEqual(len(g), 11, "参加費6行 + 返金5行を、同じグッズのシートにまとめる")
+            self.assertEqual(sorted(g["total_cost"].astype(int).tolist()), [-3000] * 5 + [6000] * 6)
+            large = pd.DataFrame([[names[0], kanas[0], "u0@example.com", 0, 0]],
+                                 columns=["name(漢字)", "name katakana", "mail", "Ticket", "Support"])
+            large.to_csv(d / "raw" / "2025_0726_大公演_ガイズ宝塚.csv", index=False)
+            r = run(sorted((d / "raw").glob("*.csv")))
+        s = r.summary.merge(r.persons[["customer_id", "name_kana"]], on="customer_id").set_index("name_kana")
+        self.assertEqual(int(s.at["カクウ ハナア", "goods"]), 3000, "返金された人は 6000 − 3000 = 3000")
+        self.assertEqual(int(s.at["カクウ ハナガ", "goods"]), 6000, "返金不要の人は 6000 のまま")
+        self.assertEqual(r.summary["goods"].sum(), 5 * 3000 + 6000)
+
+
+class StaleOutputTest(unittest.TestCase):
+    def test_previous_outputs_are_cleared(self):
+        import contextlib, io
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            raw = d / "raw"; raw.mkdir()
+            (raw / "古い版が作ったファイル.csv").write_text("name(漢字)\n架空\n", encoding="utf-8")  # 管理ファイルなし
+            df = pd.DataFrame({"お名前": ["架空 花子", "試験 太郎", "新規 由美"], "合計金額": [1000, 2000, 3000],
+                               "フリガナ": ["カクウ ハナコ", "シケン タロウ", "シンキ ユミ"]})
+            with pd.ExcelWriter(orig / "管理.xlsx") as w:
+                df.to_excel(w, sheet_name="331誕生日企画", index=False)
+            args = [str(orig), "-o", str(raw), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                standardize(args)
+            self.assertFalse((raw / "古い版が作ったファイル.csv").exists(), "古いCSVは退避される")
+            self.assertTrue(any(p.name.startswith("raw_backup_") for p in d.iterdir()))
+            m = load_map(d / "map.csv")
+            m.loc[0, ["category", "date", "name"]] = ["annual", "20260331", "誕生日企画"]
+            m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            self.assertEqual([p.name for p in raw.glob("*.csv")], ["2026_0331_誕生日企画.csv"])
+            m.loc[0, ["date", "name"]] = ["20260401", "誕生日"]            # 設定を変えて再実行
+            m.to_csv(d / "map.csv", index=False, encoding="utf-8-sig")
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            self.assertEqual([p.name for p in raw.glob("*.csv")], ["2026_0401_誕生日.csv"], "前回の出力は残らない")

@@ -7,7 +7,7 @@ import unicodedata
 
 from datetime import date, datetime
 
-from .classify import ANNUAL, APPLICATION, GOODS, LARGE, POST_SALE, ROSTER, SMALL, SOCIAL, TEA_PARTY, normalize_text
+from .classify import ANNUAL, APPLICATION, GOODS, LARGE, POST_SALE, REFUND, ROSTER, SMALL, SOCIAL, TEA_PARTY, normalize_text
 
 PERSON_FIELDS = [
     "name_kanji",
@@ -40,6 +40,7 @@ EXPECTED_AMOUNTS = {
     ANNUAL: ["total_cost"],
     GOODS: ["total_cost"],
     POST_SALE: ["total_cost"],
+    REFUND: ["total_cost"],
     APPLICATION: ["support"],  # サポート代（見込額）
     ROSTER: [],  # 名簿は連絡先のみ
 }
@@ -69,7 +70,7 @@ _ALIASES = {
                   "第2希望", "第3希望", "第4希望", "第5希望"],
     "entry_fee": ["entryfee", "entry", "参加費", "会費", "参加料", "お茶会費"],
     "total_cost": ["totalcost", "total", "cost", "合計", "合計金額", "金額", "総額", "購入金額",
-                   "ご協力金額", "協力金額", "ご協力金", "協力金", "ご入金額", "入金額"],
+                   "ご協力金額", "協力金額", "ご協力金", "協力金", "ご入金額", "入金額", "返金額", "返金金額"],
 }
 
 
