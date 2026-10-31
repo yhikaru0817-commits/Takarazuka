@@ -296,6 +296,24 @@ def load_red_rows(path: Path) -> dict:
     return out
 
 
+def _overlap(a: pd.DataFrame, b: pd.DataFrame) -> float:
+    """2つのシートで「同じ人・同じ金額」の行がどれだけ重なっているか（0〜1）。コピーや整理版の見つけ出し用。"""
+    cols = [c for c in ("Ticket", "Support", "Entry_fee", "total_cost") if c in a.columns and c in b.columns]
+    if not cols:
+        return 0.0
+
+    def keys(df):
+        out = set()
+        for _, r in df.iterrows():
+            who = name_key(r.get("name(漢字)") or r.get("name katakana") or "")
+            if who:
+                out.add((who, tuple(r[c] for c in cols)))
+        return out
+
+    ka, kb = keys(a), keys(b)
+    return len(ka & kb) / min(len(ka), len(kb)) if ka and kb else 0.0
+
+
 def file_key(name) -> str:
     """ファイル名の照合用キー。ダウンロードし直して「 (1)」が付いたり消えたりしても、同じファイルとみなす。"""
     stem = unicodedata.normalize("NFKC", Path(str(name)).stem)
@@ -475,7 +493,7 @@ def main(argv=None):
                             for c, d, n in zip(smap["category"], smap["date"], smap["name"])]
 
     # 整形
-    report, merged, orphans = [], {}, 0
+    report, merged, orphans, merged_idx = [], {}, 0, {}
     for idx, r in smap.iterrows():
         def issue(msg, r=r):
             report.append({"source_file": r["source_file"], "source_sheet": r["source_sheet"], "message": msg})
@@ -516,6 +534,23 @@ def main(argv=None):
             total_red += stats["red"]
         smap.at[idx, "totals"] = " / ".join(tot)
         merged.setdefault(r["target_sheet"], []).append(out)
+        merged_idx.setdefault(r["target_sheet"], []).append(idx)
+
+    # 複数のシートを1つのイベントにまとめた場合: まとめた枚数を表示し、同じ内容が重なっていれば警告する
+    dup_pairs, combined = 0, []
+    for target, parts in merged.items():
+        if len(parts) < 2:
+            continue
+        combined.append((target, len(parts)))
+        idxs = merged_idx[target]
+        for i in range(len(parts)):
+            for j in range(i + 1, len(parts)):
+                if _overlap(parts[i], parts[j]) >= 0.8:
+                    dup_pairs += 1
+                    for k in (idxs[i], idxs[j]):
+                        if "重なっている" not in smap.at[k, "note"]:
+                            smap.at[k, "note"] = "・".join(x for x in (
+                                smap.at[k, "note"], "同じ内容のシートと重なっている可能性（二重に数えます。コピーなら skip）") if x)
 
     dst.mkdir(parents=True, exist_ok=True)
     map_path.parent.mkdir(parents=True, exist_ok=True)
@@ -548,6 +583,10 @@ def main(argv=None):
             print(f"  {name}: {len(df)} 行" + (" / " + " / ".join(sums) if sums else ""))
     if added:
         print(f"新しく見つかったシート: {len(added)} 件を {map_path} に追加しました")
+    for target, n in combined:
+        print(f"  {n}枚のシートを1つにまとめました: {target}")
+    if dup_pairs:
+        print(f"★ 同じ人・同じ金額が重なっているシートの組: {dup_pairs} 組 → {map_path} の note 列を確認してください（コピーなら skip）")
     if inherited:
         print(f"シート名を変えたシートの設定を引き継ぎました: {inherited} 件")
     if orphans:

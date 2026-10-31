@@ -744,3 +744,42 @@ class PostSaleAndRenameTest(unittest.TestCase):
             self.assertIn("引き継ぎました: 1 件", buf.getvalue())
             out = pd.read_csv(d / "raw" / "2026_0404_大公演_呂布宝塚.csv", dtype=str)
             self.assertEqual(len(out), 8)
+
+
+class SplitSheetsTest(unittest.TestCase):
+    """同じイベントが複数のシートに分かれている場合。"""
+
+    def test_numbered_suffix_is_same_event(self):
+        for name in ("雨にじむ渤海_親睦会2", "雨にじむ渤海_親睦会 (2)", "雨にじむ渤海_親睦会_3"):
+            info = classify_sheet(name)
+            self.assertEqual((info.category, info.name), (SOCIAL, "雨にじむ渤海"), name)
+        info = classify_sheet("2026_0125_雨にじむ渤海_親睦会 (2)")
+        self.assertEqual((info.category, info.name, info.event_date), (SOCIAL, "雨にじむ渤海", date(2026, 1, 25)))
+
+    def test_split_sheets_are_merged_and_copies_are_flagged(self):
+        import contextlib, io
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+
+            def people(start, n):
+                return pd.DataFrame({"お名前": [f"架空 花{chr(0x5B50 + i)}" for i in range(start, start + n)],
+                                     "フリガナ": [f"カクウ ハナ{chr(0x30A2 + 2 * i)}" for i in range(start, start + n)],
+                                     "合計金額": [5500] * n})
+            with pd.ExcelWriter(orig / "管理.xlsx") as w:
+                people(0, 6).to_excel(w, sheet_name="雨にじむ渤海_親睦会", index=False)
+                people(6, 4).to_excel(w, sheet_name="雨にじむ渤海_親睦会2", index=False)      # 別の人（追加分）
+                people(0, 6).to_excel(w, sheet_name="雨にじむ渤海_親睦会3", index=False)      # 1枚目のコピー
+            args = [str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                standardize(args)
+            out = pd.read_csv(d / "raw" / "雨にじむ渤海_親睦会.csv", dtype=str)
+            self.assertEqual(len(out), 16, "3枚を1つのイベントにまとめる")
+            self.assertIn("3枚のシートを1つにまとめました", buf.getvalue())
+            self.assertIn("重なっているシートの組: 1 組", buf.getvalue())
+            m = load_map(d / "map.csv").set_index("source_sheet")
+            self.assertIn("重なっている", m.at["雨にじむ渤海_親睦会3", "note"])
+            self.assertIn("重なっている", m.at["雨にじむ渤海_親睦会", "note"])
+            self.assertNotIn("重なっている", m.at["雨にじむ渤海_親睦会2", "note"])

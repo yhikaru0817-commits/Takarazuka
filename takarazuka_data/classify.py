@@ -100,6 +100,9 @@ def _split_performance(rest: str):
 def classify_sheet(sheet_name: str) -> SheetInfo:
     text = normalize_text(sheet_name)
     text = re.sub(r"\s*_\s*", "_", text)
+    m = re.match(r"^(.+_(?:お茶会|親睦会|グッズ|事後販売|名簿))[\s_]*\(?\d{1,2}\)?$", text)
+    if m:  # '雨にじむ渤海_親睦会2' や '…_親睦会 (2)' のように連番が付いていても、同じ種別・同じイベントとして扱う
+        text = m.group(1)
 
     for suffix in APPLICATION_SUFFIXES:
         if text.endswith("_" + suffix):
