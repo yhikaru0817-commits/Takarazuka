@@ -319,6 +319,56 @@ def _overlap(a: pd.DataFrame, b: pd.DataFrame) -> float:
     return len(ka & kb) / min(len(ka), len(kb)) if ka and kb else 0.0
 
 
+def build_summary_tables(merged: dict, merged_idx: dict, smap: pd.DataFrame):
+    """整形後のデータを、顧客マスターを作る側が使いやすい2つの表にまとめる。
+
+    sheet_index.csv     : 1行 = 整形後の1シート（種別・日付・名前・紐づく公演・行数・金額の合計・元のシート）
+    standardized_all.csv: 全シートの行を縦に並べた1つの表（どのシート・どの元の行かが分かる）
+    """
+    meta = {}
+    for target, idxs in merged_idx.items():
+        cats = [normalize_category(smap.at[i, "category"]) for i in idxs]
+        cat = GOODS if any(c in (GOODS, REFUND) for c in cats) else cats[0]
+        date_ = next((normalize_date(smap.at[i, "date"]) for i in idxs if str(smap.at[i, "date"]).strip()), "")
+        meta[target] = {"category": cat, "name": smap.at[idxs[0], "name"], "date": date_, "idxs": idxs, "cats": cats}
+    perf = {}
+    for target, m in meta.items():
+        if m["category"] in (LARGE, SMALL):
+            perf.setdefault((m["category"], name_key(m["name"])), []).append(target)
+
+    def linked(m):
+        want = {TEA_PARTY: [LARGE], SOCIAL: [SMALL], GOODS: [LARGE, SMALL]}.get(m["category"])
+        if not want:
+            return ""
+        found = [t for c in want for t in perf.get((c, name_key(m["name"])), [])]
+        return " / ".join(found)
+
+    index_rows, parts_all = [], []
+    for target, parts in sorted(merged.items()):
+        m = meta[target]
+        df = pd.concat(parts, ignore_index=True)
+        sums = [f"{col} {int(pd.to_numeric(df[col], errors='coerce').fillna(0).sum()):,}円"
+                for col in ("Ticket", "Support", "Entry_fee", "total_cost") if col in df.columns]
+        sources = sorted({str(smap.at[i, "source_sheet"]) for i in m["idxs"]})
+        index_rows.append({"sheet": target, "category": m["category"], "event_name": m["name"], "event_date": m["date"],
+                           "linked_sheet": linked(m), "rows": len(df), "totals": " / ".join(sums),
+                           "source_sheets": " / ".join(sources)})
+        for part, idx, cat in zip(parts, m["idxs"], m["cats"]):
+            p = part.rename(columns={"__row": "source_row"})
+            p.insert(0, "source_row", p.pop("source_row"))
+            p.insert(0, "source_sheet", smap.at[idx, "source_sheet"])
+            p.insert(0, "row_type", cat)  # goods のシートに加えた返金は refund（金額はマイナス）
+            p.insert(0, "linked_sheet", linked(m))
+            p.insert(0, "event_date", m["date"])
+            p.insert(0, "event_name", m["name"])
+            p.insert(0, "category", m["category"])
+            p.insert(0, "sheet", target)
+            parts_all.append(p)
+    cols = ["sheet", "category", "event_name", "event_date", "linked_sheet", "rows", "totals", "source_sheets"]
+    all_df = pd.concat(parts_all, ignore_index=True) if parts_all else pd.DataFrame()
+    return pd.DataFrame(index_rows, columns=cols), all_df
+
+
 def file_key(name) -> str:
     """ファイル名の照合用キー。ダウンロードし直して「 (1)」が付いたり消えたりしても、同じファイルとみなす。"""
     stem = unicodedata.normalize("NFKC", Path(str(name)).stem)
@@ -408,6 +458,7 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "", sk
             issue(f"{i + 1}行目: 氏名がないため除外しました")
             continue
         row = {OUTPUT_HEADERS[f]: rec[f] for f in BASE_FIELDS}
+        row["__row"] = i + 1  # 元のシートの行番号
         for f in amounts:
             row[OUTPUT_HEADERS[f]] = -abs(rec[f]) if category == REFUND else rec[f]
         for f in optional:
@@ -418,7 +469,7 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "", sk
                 v = rec["line_id"]
             row[OPTIONAL_HEADERS[f]] = "" if is_blank(v) else normalize_text(v)
         out.append(row)
-    cols = [OUTPUT_HEADERS[f] for f in BASE_FIELDS + amounts] + [OPTIONAL_HEADERS[f] for f in optional]
+    cols = [OUTPUT_HEADERS[f] for f in BASE_FIELDS + amounts] + [OPTIONAL_HEADERS[f] for f in optional] + ["__row"]
     return pd.DataFrame(out, columns=cols), unmapped
 
 
@@ -587,7 +638,7 @@ def main(argv=None):
     view = map_path.parent / "standardized.xlsx"
     with pd.ExcelWriter(view) as w:
         for name, parts in sorted(merged.items()):
-            df = pd.concat(parts, ignore_index=True)  # 同じ公演が複数シートに分かれていたら結合
+            df = pd.concat(parts, ignore_index=True).drop(columns="__row")  # 同じ公演が複数シートに分かれていたら結合
             df.to_csv(dst / f"{name}.csv", index=False, encoding="utf-8-sig")
             written_names.append(f"{name}.csv")
             title = unicodedata.normalize("NFKC", name)[:31]
@@ -597,6 +648,9 @@ def main(argv=None):
         if not merged:
             pd.DataFrame().to_excel(w, sheet_name="empty")
     manifest.write_text("\n".join(written_names), encoding="utf-8")
+    index_df, all_df = build_summary_tables(merged, merged_idx, smap)
+    index_df.to_csv(map_path.parent / "sheet_index.csv", index=False, encoding="utf-8-sig")
+    all_df.to_csv(map_path.parent / "standardized_all.csv", index=False, encoding="utf-8-sig")
     report_path = map_path.parent / "standardize_report.csv"
     pd.DataFrame(report, columns=["source_file", "source_sheet", "message"]).to_csv(
         report_path, index=False, encoding="utf-8-sig")
@@ -636,6 +690,8 @@ def main(argv=None):
     if report:
         print(f"注意事項: {len(report)} 件 → {report_path}")
     print(f"確認用: {view}")
+    print(f"顧客マスターを作る側に渡すファイル: {map_path.parent / 'standardized_all.csv'}（全シートを1つにした表）/ "
+          f"{map_path.parent / 'sheet_index.csv'}（シートの一覧）/ {dst}/（シートごとのCSV）")
     return len(todo)
 
 

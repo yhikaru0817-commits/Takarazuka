@@ -1007,3 +1007,44 @@ class LifeEventReviewTest(unittest.TestCase):
         self.assertEqual(p.at["ナマエ ダケ", "email"], "")
         self.assertEqual(int(r.summary.set_index("customer_id").at[p.at["ナマエ ダケ", "customer_id"], "large_support"]), 0)
         self.assertTrue((r.master["customer_id"] == p.at["ナマエ ダケ", "customer_id"]).any(), "名前だけでもマスターに載る")
+
+
+class HandoffTablesTest(unittest.TestCase):
+    """顧客マスターを作る側に渡す2つの表。"""
+
+    def test_index_and_combined_table(self):
+        import contextlib, io
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            names = [f"架空 花{chr(0x5B50 + i)}" for i in range(4)]
+            kanas = [f"かくう はな{chr(0x3042 + 2 * i)}" for i in range(4)]  # ひらがな → カタカナにそろう
+            with pd.ExcelWriter(orig / "管理.xlsx") as w:
+                pd.DataFrame({"名前": names, "フリガナ": kanas, "サポート代": [1000, 2000, 0, 500]}
+                             ).to_excel(w, sheet_name="2026_0121_small_雨にじむ渤海", index=False)
+                pd.DataFrame({"名前": names[:3], "フリガナ": kanas[:3], "金額": [5500] * 3}
+                             ).to_excel(w, sheet_name="雨にじむ渤海_親睦会", index=False)
+                pd.DataFrame({"名前": names[:2], "フリガナ": kanas[:2], "金額": [3000] * 2}
+                             ).to_excel(w, sheet_name="雨にじむ渤海_事後販売", index=False)
+            args = [str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                standardize(args)
+            idx = pd.read_csv(d / "sheet_index.csv", dtype=str).fillna("").set_index("sheet")
+            self.assertEqual(idx.at["雨にじむ渤海_親睦会", "linked_sheet"], "2026_0121_小公演_雨にじむ渤海")
+            self.assertEqual(idx.at["雨にじむ渤海_事後販売", "linked_sheet"], "", "事後販売はどの公演にも紐づけない")
+            self.assertEqual(idx.at["2026_0121_小公演_雨にじむ渤海", "rows"], "4")
+            self.assertIn("Support 3,500円", idx.at["2026_0121_小公演_雨にじむ渤海", "totals"])
+            al = pd.read_csv(d / "standardized_all.csv", dtype=str).fillna("")
+            self.assertEqual(len(al), 4 + 3 + 2)
+            self.assertEqual(al.columns[:8].tolist(), ["sheet", "category", "event_name", "event_date", "linked_sheet",
+                                                       "row_type", "source_sheet", "source_row"])
+            soc = al[al["sheet"] == "雨にじむ渤海_親睦会"]
+            self.assertEqual(soc["source_row"].tolist(), ["2", "3", "4"], "元のシートの行番号（見出しが1行目）")
+            self.assertEqual(soc["name katakana"].iloc[0], "カクウ ハナア", "ひらがなはカタカナにそろえる")
+            # シートごとのCSVには、補助の列は入らない
+            raw = pd.read_csv(d / "raw" / "雨にじむ渤海_親睦会.csv")
+            self.assertNotIn("source_row", raw.columns)
+            self.assertNotIn("__row", raw.columns)
+            self.assertIn("顧客マスターを作る側に渡すファイル", buf.getvalue())

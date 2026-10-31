@@ -9,8 +9,8 @@
 - テストは架空データのみを使う（`tests/test_pipeline.py` を参照）。
 
 ## 構成
-- `takarazuka_data/` : データ整形（`python -m takarazuka_data`）
-- 出力の仕様は `DATA_SPEC.md`。配分システムは `customer_id` をキーに出力CSVを読む。
+- `takarazuka_data/standardize.py` : 既存シートの整形（`python -m takarazuka_data.standardize`）。**このリポジトリの主な役割。**
+- 整形後のデータの仕様は `DATA_SPEC.md`（顧客マスターは別の人が作る。`python -m takarazuka_data` の名寄せ・顧客番号は参考実装）。
 
 ## テスト
 ```bash
