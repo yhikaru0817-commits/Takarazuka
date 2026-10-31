@@ -63,7 +63,7 @@ OUTPUT_HEADERS = {
     "prefecture": "prefecture", "address1": "address 1", "address2": "address 2",
     "ticket": "Ticket", "support": "Support", "entry_fee": "Entry_fee", "total_cost": "total_cost",
 }
-OPTIONAL_HEADERS = {"line_id": "LINE ID", "seat_type": "席種", "quantity": "枚数"}  # 元にあれば残す
+OPTIONAL_HEADERS = {"line_id": "LINE ID", "seat_type": "席種", "quantity": "枚数", "headcount": "人数"}  # 元にあれば残す
 BASE_FIELDS = [f for f in PERSON_FIELDS if f != "line_id"]
 
 # 種別の推測に使う語（シート名・ファイル名から）
@@ -164,7 +164,7 @@ def target_sheet(category: str, date: str, name: str) -> str:
 # ---------- 列名の行がないシート: 列の指定 ----------
 # sheet_map.csv の columns 列に「A=番号 B=- C=名前 D=カナ ...」のように書く（A,B,C は Excel の列）。
 # 「-」や番号・日付・人数・備考などは取り込まない。
-IGNORE_LABELS = {"", "-", "ー", "番号", "日付", "日時", "人数", "備考", "メモ", "不明", "?", "？"}
+IGNORE_LABELS = {"", "-", "ー", "番号", "日付", "日時", "備考", "メモ", "不明", "?", "？"}
 _SPEC_TOKEN = re.compile(r"([A-Za-z]{1,2})\s*[=:：＝]\s*([^\s,、]*)")
 
 
@@ -378,7 +378,7 @@ def amount_summary(df: pd.DataFrame) -> list[str]:
 
 def fix_amount_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     """金額の列を整数にそろえる（元のシートにない列は空欄のまま。0 や 123.0 にしない）。"""
-    for col in ("Ticket", "Support", "total_cost"):
+    for col in ("Ticket", "Support", "total_cost", "枚数", "人数"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
     return df
@@ -478,8 +478,13 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "", sk
             elif f != "ticket":  # チケット代は任意（なくても警告しない）
                 issue(f"金額列 {OUTPUT_HEADERS[f]} が見つかりません")
     present = set(mapping.values())  # 別名の列で代用したあとの対応
-    optional = [f for f in OPTIONAL_HEADERS if f in set(mapping.values())] if category in (LARGE, SMALL) else \
-        (["line_id"] if "line_id" in set(mapping.values()) else [])
+    if category in (LARGE, SMALL):
+        wanted = ["line_id", "seat_type", "quantity", "headcount"]
+    elif category == REFUND:  # 返金は、人数を数えない（支払いの行と二重になるため）
+        wanted = ["line_id"]
+    else:
+        wanted = ["line_id", "headcount"]  # お茶会・親睦会などの人数
+    optional = [f for f in wanted if f in set(mapping.values())]
 
     out = []
     ranks = column_ranks(df, header_row, mapping)
@@ -503,8 +508,9 @@ def standardize_sheet(df: pd.DataFrame, category: str, issue, spec: str = "", sk
             row[OUTPUT_HEADERS[f]] = (-abs(rec[f]) if category == REFUND else rec[f]) if f in present else None
         for f in optional:
             v = raw.get(f)
-            if f == "quantity":
-                v = clean_amount(v)[0] if not is_blank(v) else ""
+            if f in ("quantity", "headcount"):
+                m_ = re.search(r"\d+", unicodedata.normalize("NFKC", str(v))) if not is_blank(v) else None
+                v = int(m_.group()) if m_ else ""
             elif f == "line_id":
                 v = rec["line_id"]
             row[OPTIONAL_HEADERS[f]] = "" if is_blank(v) else normalize_text(v)

@@ -1160,3 +1160,33 @@ class MissingAmountColumnTest(unittest.TestCase):
             self.assertEqual(m.at["2026_0404_large_呂布宝塚", "totals"], "Ticket 16,500円 / Support 3,500円")
             report = pd.read_csv(d / "standardize_report.csv", dtype=str).fillna("")
             self.assertFalse(report["message"].str.contains("Ticket が見つかりません").any(), "チケット代がなくても警告しない")
+
+
+class HeadcountTest(unittest.TestCase):
+    def test_headcount_is_kept_for_fan_events_but_not_for_refunds(self):
+        import contextlib, io
+        from takarazuka_data.standardize import load_map, main as standardize
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            orig = d / "original"; orig.mkdir()
+            names = [f"架空 花{chr(0x5B50 + i)}" for i in range(4)]
+            kanas = [f"カクウ ハナ{chr(0x30A2 + 2 * i)}" for i in range(4)]
+            with pd.ExcelWriter(orig / "管理.xlsx") as w:
+                pd.DataFrame({"会費": [8000, 16000, 8000, 24000], "人数": [1, 2, 1, "3名"], "名前": names, "フリガナ": kanas}
+                             ).to_excel(w, sheet_name="tea_呂布宝塚", index=False)
+                pd.DataFrame({"名前": names[:2], "フリガナ": kanas[:2], "返金額": [3000, 6000], "お申込み人数": [1, 2]}
+                             ).to_excel(w, sheet_name="refund_呂布宝塚", index=False)
+                pd.DataFrame({"名前": names, "フリガナ": kanas, "サポート代": [1000] * 4, "人数": [1] * 4}
+                             ).to_excel(w, sheet_name="2026_0404_large_呂布宝塚", index=False)
+            args = [str(orig), "-o", str(d / "raw"), "--map", str(d / "map.csv"), "--aliases", str(d / "none.csv")]
+            with contextlib.redirect_stdout(io.StringIO()):
+                standardize(args)
+            tea = pd.read_csv(d / "raw" / "tea_呂布宝塚.csv", dtype=str)
+            self.assertEqual(tea["人数"].tolist(), ["1", "2", "1", "3"], "「3名」も3人として読む")
+            self.assertEqual(tea["total_cost"].tolist(), ["8000", "16000", "8000", "24000"])
+            goods = pd.read_csv(d / "raw" / "goods_呂布宝塚.csv", dtype=str)
+            self.assertNotIn("人数", goods.columns, "返金の行には人数を付けない（支払いの行と二重になるため）")
+            al = pd.read_csv(d / "standardized_all.csv", dtype=str)
+            self.assertIn("人数", al.columns)
+            report = pd.read_csv(d / "standardize_report.csv", dtype=str).fillna("")
+            self.assertFalse(report["message"].str.contains("使わなかった列: 人数").any())

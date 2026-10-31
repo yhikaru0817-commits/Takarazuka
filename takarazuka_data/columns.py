@@ -24,7 +24,7 @@ PERSON_FIELDS = [
 ]
 AMOUNT_FIELDS = ["ticket", "support", "entry_fee", "total_cost"]
 # 公演・申請シートで任意に使える列
-TICKET_FIELDS = ["seat_type", "quantity", "show_date", "show_time", "alt_dates"]
+TICKET_FIELDS = ["seat_type", "quantity", "headcount", "show_date", "show_time", "alt_dates"]
 MULTI_FIELDS = {"alt_dates", "address1", "address2"}  # 複数列をまとめて受け取る（振替1・振替2 / 市区町村・町名番地 ...）
 ADDRESS_FIELDS = ("address1", "address2")
 
@@ -66,6 +66,7 @@ _ALIASES = {
                 "見込額", "お花代", "花代", "支援", "支援金"],
     "seat_type": ["seattype", "seat", "席種", "座席", "席", "希望席種", "確定席種"],
     "quantity": ["quantity", "qty", "count", "tickets", "枚数", "申込枚数", "希望枚数", "申請枚数", "確定枚数"],
+    "headcount": ["headcount", "人数", "参加人数", "参加者数", "申込人数", "お申込み人数", "お申込人数", "ご参加人数", "ご予約人数"],
     "show_date": ["showdate", "date", "datetime", "公演日", "公演日時", "観劇日", "観劇日時", "希望日", "希望日時",
                   "日程", "日時", "第1希望"],
     "show_time": ["showtime", "time", "時間", "開演", "開演時間", "公演時間", "回"],
