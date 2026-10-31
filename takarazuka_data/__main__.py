@@ -61,10 +61,18 @@ def main(argv=None):
     # 個人情報は表示せず件数のみ
     print(f"ファイル: {len(paths)} / イベント: {len(result.events)} / 人物: {len(result.persons)}")
     print(f"今回の申請: {len(result.application_requests)} 件")
-    print(f"顧客マスター: {(result.master['merged_into'] == '').sum()} 人（{master_dir}）")
+    active = result.master[result.master["merged_into"] == ""]
+    print(f"顧客マスター: {len(active)} 人（{master_dir}）")
+    no_contact = active[(active["email"] == "") & (active["phone"] == "") & (active["address1"] == "")]
+    if len(no_contact):
+        print(f"  連絡先（メール・電話・住所）が1つもない顧客: {len(no_contact)} 人（名前だけで登録。連絡先が見つかれば自動で補います）")
     if len(result.match_review):
         print(f"★ 同一人物か確認が必要な組: {len(result.match_review)} 件 → {out_dir / 'match_review.csv'} の"
               " decision 列に「同一」か「別人」を書いて保存し、もう一度実行してください")
+        for conf, n in result.match_review["confidence"].value_counts().reindex(["高", "中", "低"]).dropna().items():
+            note = {"高": "姓が変わったらしい。同一の可能性が高い", "中": "引っ越し・連絡先の変更の可能性",
+                    "低": "家族など別人の可能性が高い"}[conf]
+            print(f"    同一人物らしさ「{conf}」: {int(n)} 件（{note}）")
         for reason, n in result.match_review["reason"].value_counts().items():
             print(f"    内訳: {reason}: {n} 件")
     for cat, n in result.events["category"].value_counts().items():

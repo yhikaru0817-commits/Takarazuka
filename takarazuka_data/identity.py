@@ -266,16 +266,47 @@ def update_master(master: pd.DataFrame, rows: pd.DataFrame) -> pd.DataFrame:
 # ---------- 要確認の組み合わせ ----------
 
 HUB_MIN = 6  # 同じ名前・同じ連絡先がこの人数以上の顧客に使われていたら、本人を特定する値とはみなさない
+_RANK = {"高": 0, "中": 1, "低": 2}
 
 
-def review_candidates(rows: pd.DataFrame, master: pd.DataFrame, decisions: pd.DataFrame) -> pd.DataFrame:
-    """自動では結びつけなかったが、同一人物かもしれない顧客の組を出す。"""
-    cols = ["customer_id_a", "name_a", "kana_a", "customer_id_b", "name_b", "kana_b", "reason", "decision"]
+def _given_kana(kana: str) -> str:
+    """フリガナの「名」の部分（最後の語）。姓が変わっても名は同じことが多い。"""
+    parts = [t for t in re.split(r"[\s　]+", to_katakana(unicodedata.normalize("NFKC", str(kana))).strip()) if t]
+    return parts[-1] if len(parts) >= 2 else ""
+
+
+def _confidence(reasons, info, a: str, b: str) -> str:
+    """同一人物らしさ。高: 姓が変わったらしい（連絡先が同じで、名が同じ）/ 中: 引っ越し・連絡先の変更の可能性 / 低: 家族など別人の可能性"""
+    best = "低"
+    for r in reasons:
+        if "名前が違う" in r:
+            ga, gb = _given_kana(info.at[a, "name_kana"]), _given_kana(info.at[b, "name_kana"])
+            c = "高" if ga and ga == gb else "低"
+        else:
+            c = "中"
+        if _RANK[c] < _RANK[best]:
+            best = c
+    return best
+
+
+def _address_text(r) -> str:
+    return "".join(str(r.get(k, "")) for k in ("prefecture", "address1", "address2"))
+
+
+def review_candidates(rows: pd.DataFrame, master: pd.DataFrame, decisions: pd.DataFrame,
+                      event_names: dict | None = None) -> pd.DataFrame:
+    """自動では結びつけなかったが、同一人物かもしれない顧客の組を、判断しやすい形で出す。
+
+    列: 同一人物らしさ(confidence) / 理由 / decision（人が「同一」「別人」を書く）/ 両者の名前・連絡先・出てくるシート。
+    """
+    detail = ["customer_id", "name", "kana", "email", "phone", "address", "sheets"]
+    cols = ["confidence", "reason", "decision"] + [f"{d}_{x}" for x in ("a", "b") for d in detail]
     active = master[master["merged_into"] == ""]
+    rows_sorted = rows.sort_values("effective_date", na_position="first") if "effective_date" in rows else rows
     names: dict[str, set] = {}
     has_contact: set = set()
     index: dict[tuple, set] = {}
-    for _, r in pd.concat([active, rows]).iterrows():
+    for _, r in pd.concat([active, rows_sorted]).iterrows():
         cid = r["customer_id"]
         for n in name_values(r):
             names.setdefault(cid, set()).add(n)
@@ -304,10 +335,23 @@ def review_candidates(rows: pd.DataFrame, master: pd.DataFrame, decisions: pd.Da
             elif not names.get(a, set()) & names.get(b, set()):
                 reasons.setdefault((a, b), set()).add(f"{labels[value.split(':')[0]]}が同じで名前が違う")
 
-    info = pd.concat([active, rows]).drop_duplicates("customer_id", keep="last").set_index("customer_id")
-    out = [{"customer_id_a": a, "name_a": info.at[a, "name_kanji"], "kana_a": info.at[a, "name_kana"],
-            "customer_id_b": b, "name_b": info.at[b, "name_kanji"], "kana_b": info.at[b, "name_kana"],
-            "reason": "・".join(sorted(rs)), "decision": ""} for (a, b), rs in sorted(reasons.items())]
+    info = pd.concat([active, rows_sorted]).drop_duplicates("customer_id", keep="last").set_index("customer_id")
+    sheets: dict[str, list] = {}
+    if event_names and "event_id" in rows:
+        for cid, g in rows.groupby("customer_id")["event_id"]:
+            sheets[cid] = sorted({event_names.get(e, "") for e in g if event_names.get(e, "")})
+
+    def side(cid, tag):
+        r = info.loc[cid]
+        return {f"customer_id_{tag}": cid, f"name_{tag}": r["name_kanji"], f"kana_{tag}": r["name_kana"],
+                f"email_{tag}": r["email"], f"phone_{tag}": r["phone"], f"address_{tag}": _address_text(r),
+                f"sheets_{tag}": " / ".join(sheets.get(cid, [])[:3])}
+
+    out = []
+    for (a, b), rs in reasons.items():
+        out.append({"confidence": _confidence(rs, info, a, b), "reason": "・".join(sorted(rs)), "decision": "",
+                    **side(a, "a"), **side(b, "b")})
+    out.sort(key=lambda r: (_RANK[r["confidence"]], r["reason"], r["customer_id_a"], r["customer_id_b"]))
     df = pd.DataFrame(out, columns=cols)
     df.attrs["hubs"] = hubs
     return df

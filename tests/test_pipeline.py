@@ -949,3 +949,61 @@ class SpecHeaderMismatchTest(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 standardize(args)
             self.assertNotIn("列名の行が示す列と違います", buf.getvalue())
+
+
+class LifeEventReviewTest(unittest.TestCase):
+    """姓・住所・電話の変更、連絡先のない人。確認が必要な組を、同一人物らしさ順に出す。"""
+
+    def test_review_pairs_have_confidence_and_details(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            cols = STD + ["Ticket", "Support"]
+            # (1) 結婚で姓が変わった: メールは同じ・名（花子）も同じ → 高
+            old = person("旧姓 花子", "キュウセイ ハナコ", "hanako@example.com", "090-1111-0001", "100-0001", addr="架空市1-1-1")
+            new = person("新姓 花子", "シンセイ ハナコ", "hanako@example.com", "", "", addr="")
+            # (2) 引っ越し・電話番号変更: 名前は同じで連絡先が全部違う → 中
+            mv1 = person("引越 太郎", "ヒッコシ タロウ", "mv1@example.com", "080-2222-0001", "200-0002", addr="試験市2-2-2")
+            mv2 = person("引越 太郎", "ヒッコシ タロウ", "mv2@example.com", "070-2222-0002", "300-0003", addr="別市3-3-3")
+            # (3) 家族: 同じ電話・住所で、名前が違う（名も違う）→ 低
+            f1 = person("家族 一郎", "カゾク イチロウ", "f1@example.com", "060-3333-0001", "400-0004", addr="家市4-4-4")
+            f2 = person("家族 二郎", "カゾク ジロウ", "f2@example.com", "060-3333-0001", "400-0004", addr="家市4-4-4")
+            pd.DataFrame([old + [1000, 0], mv1 + [1000, 0], f1 + [1000, 0]], columns=cols).to_csv(
+                d / "2026_0121_小公演_渤海.csv", index=False)
+            pd.DataFrame([new + [1000, 0], mv2 + [1000, 0], f2 + [1000, 0]], columns=cols).to_csv(
+                d / "2026_0404_大公演_呂布宝塚.csv", index=False)
+            r = run(sorted(d.glob("*.csv")))
+        mr = r.match_review.set_index("name_a")
+        by_reason = {row["reason"]: row for _, row in r.match_review.iterrows()}
+        self.assertEqual(r.match_review.columns[:3].tolist(), ["confidence", "reason", "decision"])
+        high = r.match_review[r.match_review["confidence"] == "高"]
+        self.assertEqual(len(high), 1)
+        self.assertEqual({high.iloc[0]["name_a"], high.iloc[0]["name_b"]}, {"旧姓 花子", "新姓 花子"})
+        self.assertEqual(by_reason["名前が同じで連絡先が違う"]["confidence"], "中")
+        low = r.match_review[r.match_review["confidence"] == "低"]
+        self.assertEqual(len(low), 1)
+        self.assertIn("電話が同じで名前が違う", low.iloc[0]["reason"])
+        # 判断材料: 連絡先と、出てくるシートが並ぶ
+        row = high.iloc[0]
+        self.assertTrue(row["email_a"] and row["email_b"])
+        self.assertIn("大公演", row["sheets_a"] + row["sheets_b"])
+        self.assertEqual(r.match_review["confidence"].tolist(), ["高", "中", "低"] + r.match_review["confidence"].tolist()[3:],
+                         "同一人物らしい順に並ぶ")
+
+    def test_people_without_contacts_still_get_a_master_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            cols = STD + ["Ticket", "Support"]
+            a = person("連絡 あり", "レンラク アリ", "ari@example.com", "090-4444-0001", "100-0001", addr="架空市1-1-1")
+            pd.DataFrame([a + [1000, 0]], columns=cols).to_csv(d / "2026_0121_小公演_渤海.csv", index=False)
+            # 連絡先のない行（名前だけ）: 1人は名簿の人と同名 → 結びつく / 1人は名簿にいない → 名前だけで登録
+            blank = ["", "", "", "", "", "", "", "", "", ""]
+            row1 = ["連絡 あり", "レンラク アリ"] + blank[2:] + [2000, 0]
+            row2 = ["名前 だけ", "ナマエ ダケ"] + blank[2:] + [3000, 0]
+            pd.DataFrame([row1, row2], columns=cols).to_csv(d / "2026_0404_大公演_呂布宝塚.csv", index=False)
+            r = run(sorted(d.glob("*.csv")))
+        self.assertEqual(len(r.persons), 2)
+        p = r.persons.set_index("name_kana")
+        self.assertEqual(p.at["レンラク アリ", "event_count"], 2, "連絡先のない行は、同名の1人に結びつく")
+        self.assertEqual(p.at["ナマエ ダケ", "email"], "")
+        self.assertEqual(int(r.summary.set_index("customer_id").at[p.at["ナマエ ダケ", "customer_id"], "large_support"]), 0)
+        self.assertTrue((r.master["customer_id"] == p.at["ナマエ ダケ", "customer_id"]).any(), "名前だけでもマスターに載る")

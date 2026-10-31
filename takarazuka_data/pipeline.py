@@ -342,7 +342,7 @@ def run(paths: list[Path], links_path: Path | None = None, prices_path: Path | N
     global_issue = issue_for("")
     rows["customer_id"], master = assign_customer_ids(rows, master, decisions, global_issue)
     master = update_master(master, rows)
-    match_review = review_candidates(rows, master, decisions)
+    match_review = review_candidates(rows, master, decisions, dict(zip(events["event_id"], events["sheet_name"])))
     hubs = match_review.attrs.get("hubs", {})
     if hubs.get("name") or hubs.get("contact"):
         global_issue("info", f"{identity_hub_min}人以上に共通する値を、確認の対象から外しました"
